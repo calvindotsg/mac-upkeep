@@ -49,6 +49,8 @@ Entry point: `maintenance.cli:app` (registered in pyproject.toml `[project.scrip
 - `poet -r <package>` calls PyPI API for the main package. Fails if not published to PyPI. Tap workflow gracefully falls back to updating only URL/sha256 (resource blocks unchanged). `brew update-python-resources` is the Homebrew-native alternative but requires macOS + Homebrew on the CI runner.
 - **Node.js formulas don't need resource blocks** — npm resolves the full dependency tree at install time via `std_npm_args`. Only URL + sha256 need updating on release.
 - **`repository_dispatch` is fire-and-forget** — the source repo won't know if the tap update succeeded. Check the homebrew-tap Actions tab after a release to verify.
+- **`.release-please-manifest.json` must exist** alongside `release-please-config.json`. Tracks current version (`{".": "1.0.0"}`). Without it, release-please-action@v4 fails with "Missing required manifest versions." release-please updates this file automatically on release.
+- **GitHub App token `repositories:` scoping** — the `bump-tap` job scopes its token to `repositories: homebrew-tap` so the dispatch has write access to the target repo. Without this parameter, the token defaults to the current repo only.
 
 ## Release Process
 
@@ -66,7 +68,7 @@ This repo serves as a reference for Python CLI projects using Typer + UV.
 **Copy directly** (adjust versions/paths):
 - `.github/workflows/test.yml` — lint + test CI on macOS
 - `.github/workflows/release.yml` — release-please with GitHub App token + tap dispatch
-- `release-please-config.json` — changelog sections for conventional commits
+- `release-please-config.json` + `.release-please-manifest.json` — config and version tracking (both required)
 - `pyproject.toml` structure — Hatchling build, Ruff lint+format, pytest config
 - `CONTRIBUTING.md` — dev setup, commit conventions, PR process
 
