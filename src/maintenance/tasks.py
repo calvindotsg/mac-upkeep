@@ -9,9 +9,13 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from maintenance.config import Config
 from maintenance.output import TaskResult
+
+if TYPE_CHECKING:
+    from maintenance.output import Output
 
 logger = logging.getLogger("maintenance")
 
@@ -42,27 +46,27 @@ def run_task(
     cmd: list[str],
     *,
     config: Config,
+    output: Output | None = None,
     dry_run: bool = False,
     needs_sudo: bool = False,
 ) -> TaskResult:
-    """Execute a maintenance task with auto-detection and graceful failure."""
+    """Execute a maintenance task with auto-detection and graceful failure.
+
+    All logging/display is delegated to Output. run_task is a pure executor.
+    """
     task_key = name.lower().replace(" ", "_")
 
     if not config.is_enabled(task_key):
-        logger.info("SKIP: %s (disabled in config)", name)
         return TaskResult(name, "skipped", reason="disabled")
 
     # Check if the primary command exists
     primary_cmd = cmd[0] if not needs_sudo else cmd[2]  # skip sudo -n
     if not shutil.which(primary_cmd):
-        logger.info("SKIP: %s (%s not installed)", name, primary_cmd)
         return TaskResult(name, "skipped", reason="not installed")
 
     if dry_run:
-        logger.info("DRY-RUN: would run %s", name)
         return TaskResult(name, "ok", reason="dry-run")
 
-    logger.info("Running %s...", name)
     start = time.monotonic()
     try:
         result = subprocess.run(
@@ -72,28 +76,59 @@ def run_task(
             timeout=300,
         )
         duration = time.monotonic() - start
-        output = strip_ansi(result.stdout + result.stderr).strip()
-        if output:
-            for line in output.splitlines():
-                logger.debug("  %s", line)
+        raw_output = strip_ansi(result.stdout + result.stderr).strip()
+        if raw_output:
+            for line in raw_output.splitlines():
+                if output is not None:
+                    output.task_debug(line)
+                else:
+                    logger.debug("  %s", line)
         if result.returncode != 0:
-            logger.warning("%s exited with code %d", name, result.returncode)
             return TaskResult(
                 name, "failed", reason=f"exit code {result.returncode}", duration=duration
             )
     except subprocess.TimeoutExpired:
         duration = time.monotonic() - start
-        logger.warning("%s timed out after 300s", name)
         return TaskResult(name, "failed", reason="timed out", duration=duration)
     except subprocess.CalledProcessError as e:
         duration = time.monotonic() - start
-        logger.warning("%s failed: %s", name, strip_ansi(e.stderr or str(e)))
-        return TaskResult(name, "failed", reason=str(e), duration=duration)
+        return TaskResult(name, "failed", reason=strip_ansi(e.stderr or str(e)), duration=duration)
 
     return TaskResult(name, "ok", duration=duration)
 
 
-def run_all_tasks(*, config: Config, dry_run: bool = False) -> list[TaskResult]:
+def _run(
+    name: str,
+    cmd: list[str],
+    *,
+    config: Config,
+    output: Output,
+    dry_run: bool,
+    needs_sudo: bool = False,
+) -> TaskResult:
+    """Run one task with full output lifecycle: start → execute → done.
+
+    task_start is only called for tasks that will actually execute (not for
+    immediately-skipped tasks), to avoid logging "Running X..." before a skip.
+    """
+    task_key = name.lower().replace(" ", "_")
+    primary_cmd = cmd[0] if not needs_sudo else cmd[2]
+    will_run = (
+        config.is_enabled(task_key)
+        and shutil.which(primary_cmd) is not None
+    )
+    if will_run:
+        output.task_start(name)
+    result = run_task(
+        name, cmd, config=config, output=output, dry_run=dry_run, needs_sudo=needs_sudo
+    )
+    output.task_done(result)
+    return result
+
+
+def run_all_tasks(
+    *, config: Config, output: Output, dry_run: bool = False
+) -> list[TaskResult]:
     """Run all maintenance tasks in order. Returns list of task results."""
     brew_prefix = get_brew_prefix()
     mo_bin = f"{brew_prefix}/bin/mo"
@@ -108,7 +143,7 @@ def run_all_tasks(*, config: Config, dry_run: bool = False) -> list[TaskResult]:
     ]
 
     for name, cmd in tasks:
-        results.append(run_task(name, cmd, config=config, dry_run=dry_run))
+        results.append(_run(name, cmd, config=config, output=output, dry_run=dry_run))
 
     # sudo tasks: env_keep in sudoers preserves HOME (not /var/root)
     sudo_tasks = [
@@ -117,37 +152,40 @@ def run_all_tasks(*, config: Config, dry_run: bool = False) -> list[TaskResult]:
     ]
     for name, cmd in sudo_tasks:
         results.append(
-            run_task(
-                name,
-                ["sudo", "-n"] + cmd,
-                config=config,
-                dry_run=dry_run,
-                needs_sudo=True,
+            _run(
+                name, ["sudo", "-n"] + cmd,
+                config=config, output=output, dry_run=dry_run, needs_sudo=True,
             )
         )
 
     # mo purge: no sudo, permanent rm -rf, no age threshold
-    results.append(run_task("mo_purge", [mo_bin, "purge"], config=config, dry_run=dry_run))
+    results.append(
+        _run("mo_purge", [mo_bin, "purge"], config=config, output=output, dry_run=dry_run)
+    )
 
     # brew bundle cleanup: runs last (mo clean runs autoremove — homebrew/brew#21350)
     if config.is_enabled("brew_bundle"):
         if not config.brewfile or not Path(config.brewfile).is_file():
-            logger.info("SKIP: brew_bundle (no Brewfile found)")
-            results.append(TaskResult("brew_bundle", "skipped", reason="no Brewfile found"))
+            r = TaskResult("brew_bundle", "skipped", reason="no Brewfile found")
+            output.task_done(r)
+            results.append(r)
         elif dry_run:
-            logger.info("DRY-RUN: would run brew_bundle")
-            results.append(TaskResult("brew_bundle", "ok", reason="dry-run"))
+            r = TaskResult("brew_bundle", "ok", reason="dry-run")
+            output.task_done(r)
+            results.append(r)
         else:
             results.append(
-                run_task(
+                _run(
                     "brew_bundle",
                     ["brew", "bundle", "cleanup", "--force", f"--file={config.brewfile}"],
                     config=config,
+                    output=output,
                     dry_run=False,
                 )
             )
     else:
-        logger.info("SKIP: brew_bundle (disabled in config)")
-        results.append(TaskResult("brew_bundle", "skipped", reason="disabled"))
+        r = TaskResult("brew_bundle", "skipped", reason="disabled")
+        output.task_done(r)
+        results.append(r)
 
     return results
