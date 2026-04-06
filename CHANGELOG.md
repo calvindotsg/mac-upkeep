@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.1](https://github.com/calvindotsg/maintenance/compare/v1.1.0...v1.1.1) (2026-04-06)
+
+
+### Bug Fixes
+
+* **tasks:** close stdin and add --force to uv cache prune ([#4](https://github.com/calvindotsg/maintenance/issues/4)) ([4692060](https://github.com/calvindotsg/maintenance/commit/46920604eaccf8e8402d8cb0e70bb3c0e4b22606))
+
+
+### Documentation
+
+* **claude:** add release-please manifest and token scoping constraints ([8cd3775](https://github.com/calvindotsg/maintenance/commit/8cd377570eb332fe00ef1367fc1743af84b2e667))
+
 ## [1.1.0](https://github.com/calvindotsg/maintenance/compare/v1.0.0...v1.1.0) (2026-04-05)
 
 
