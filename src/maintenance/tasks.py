@@ -74,6 +74,7 @@ def run_task(
             capture_output=True,
             text=True,
             timeout=300,
+            stdin=subprocess.DEVNULL,
         )
         duration = time.monotonic() - start
         raw_output = strip_ansi(result.stdout + result.stderr).strip()
@@ -137,7 +138,7 @@ def run_all_tasks(
     tasks = [
         ("gcloud", ["gcloud", "components", "update", "--quiet"]),
         ("pnpm", ["pnpm", "store", "prune"]),
-        ("uv", ["uv", "cache", "prune"]),
+        ("uv", ["uv", "cache", "prune", "--force"]),
         # --interactive: fisher needs job control (jorgebucaran/fisher#608)
         ("fisher", ["fish", "--interactive", "-c", "fisher update"]),
     ]
