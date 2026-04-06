@@ -30,6 +30,7 @@ Entry point: `maintenance.cli:app` (registered in pyproject.toml `[project.scrip
 - **Graceful failure**: Each task wrapped in try/except. Individual failures log a warning and continue to the next task. The CLI always exits 0 unless interrupted (130).
 - **ANSI stripping**: Mole emits color codes even without TTY. `re.sub(r'\x1b\[[0-9;]*m', '', output)` strips them from captured output.
 - **sudo + HOME**: `sudo -n` with full path `$BREW_PREFIX/bin/mo`. Sudoers `env_keep += "HOME"` preserves user's home directory (otherwise `HOME=/var/root` and mole misses user caches).
+- **stdin closed for subprocesses**: `subprocess.run` passes `stdin=subprocess.DEVNULL` to prevent interactive tool hangs. Mole detects interactive mode via `[[ -t 0 ]]` (stdin is TTY) or unguarded `read_key` calls — `capture_output=True` only pipes stdout/stderr, leaving stdin inherited from the parent terminal.
 - **fisher needs `--interactive`**: Fisher uses `$last_pid` for job control which fails in non-interactive shells ([fisher#608](https://github.com/jorgebucaran/fisher/issues/608)).
 - **Task ordering**: `brew_bundle` runs last because `mo_clean` internally runs `brew autoremove`. Running bundle cleanup after avoids the [cascading removal bug](https://github.com/homebrew/brew/issues/21350).
 - **Brew prefix detection**: `subprocess.run(["brew", "--prefix"])` with architecture fallback. Portable across Apple Silicon and Intel.
@@ -42,8 +43,9 @@ Entry point: `maintenance.cli:app` (registered in pyproject.toml `[project.scrip
 ## Non-Obvious Constraints
 
 - `gcloud-cli` is a Homebrew cask, not a formula — can't be a formula dependency. Auto-detected at runtime.
-- `mo_purge` uses permanent `rm -rf` with no age threshold. All matching patterns (node_modules, .venv, target/) in configured scan paths are deleted.
-- `mo_optimize` security fixes are auto-skipped in non-TTY contexts (read_key returns QUIT). Safe operations still run.
+- `mo_purge` non-interactive mode (stdin closed) auto-selects items not modified in the last 7 days. Recently modified project artifacts are preserved. Interactive mode (direct `mo purge`) shows a TUI selector with manual choice.
+- `mo_optimize` has three unguarded `read_key` calls (security fixes, updates, auto-fix) that block on stdin if their conditions are met. With stdin closed, `read` returns non-zero → `read_key` yields QUIT → prompts skipped. Safe operations (checks, health scans) still run.
+- `uv cache prune` requires `--force` in environments with long-running `uvx` processes (MCP servers, dev tools). Without it, prune blocks on the cache lock held by `uvx` processes ([astral-sh/uv#16112](https://github.com/astral-sh/uv/issues/16112)).
 - NOPASSWD in sudoers bypasses PAM entirely — no interaction with Touch ID (pam_tid) setup.
 - `check_touchid` is already whitelisted in mole's optimize whitelist, preventing false positive security fix suggestions.
 - `poet -r <package>` calls PyPI API for the main package. Fails if not published to PyPI. Tap workflow gracefully falls back to updating only URL/sha256 (resource blocks unchanged). `brew update-python-resources` is the Homebrew-native alternative but requires macOS + Homebrew on the CI runner.
@@ -81,6 +83,7 @@ This repo serves as a reference for Python CLI projects using Typer + UV.
 - Rich dual-mode output (`isatty()` detection) for any CLI running interactively AND via scheduler
 - osascript notifications for any macOS launchd service needing user feedback
 - `repository_dispatch` + GitHub App for cross-repo automation across multiple source repos
+- `subprocess.run(stdin=subprocess.DEVNULL)` for any CLI orchestrator wrapping interactive tools — prevents invisible prompt hangs when stdout is piped but stdin leaks from parent terminal
 
 **Project-specific (do not copy):**
 - Mole CLI wrapper and sudo/HOME/sudoers configuration

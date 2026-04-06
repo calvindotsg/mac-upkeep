@@ -51,6 +51,8 @@ def test_run_task_executes_command(mock_which, mock_run):
     assert result.reason == ""
     assert result.duration > 0
     mock_run.assert_called_once()
+    call_kwargs = mock_run.call_args[1]
+    assert call_kwargs["stdin"] == subprocess.DEVNULL
 
 
 @patch("maintenance.tasks.subprocess.run")
