@@ -16,13 +16,15 @@
 
 ```
 cli.py    → Typer app, subcommand dispatch, signal handling, logging setup
-tasks.py  → run_task() helper, run_all_tasks() orchestrator, ANSI stripping
-config.py → TOML loading (tomllib), env var overrides, Brewfile discovery
-output.py → TaskResult dataclass, interactive/non-interactive output (Rich)
-notify.py → macOS notifications via osascript, summary formatting
+tasks.py  → run_task() helper, run_all_tasks() orchestrator, frequency scheduling, ANSI stripping
+config.py → TOML loading (tomllib), env var overrides, frequency defaults, Brewfile discovery
+output.py → TaskResult dataclass, Rich Live table TUI (interactive), Python logging (non-interactive)
+notify.py → macOS notifications via terminal-notifier (preferred) / osascript (fallback), bundle ID detection
 ```
 
 Entry point: `maintenance.cli:app` (registered in pyproject.toml `[project.scripts]`).
+
+11 tasks in order: `brew_update` → `brew_upgrade` → `gcloud` → `pnpm` → `uv` → `fisher` → `mo_clean` → `mo_optimize` → `mo_purge` → `brew_cleanup` → `brew_bundle`.
 
 ## Key Patterns
 
@@ -32,13 +34,20 @@ Entry point: `maintenance.cli:app` (registered in pyproject.toml `[project.scrip
 - **sudo + HOME**: `sudo -n` with full path `$BREW_PREFIX/bin/mo`. Sudoers `env_keep += "HOME"` preserves user's home directory (otherwise `HOME=/var/root` and mole misses user caches).
 - **stdin closed for subprocesses**: `subprocess.run` passes `stdin=subprocess.DEVNULL` to prevent interactive tool hangs. Mole detects interactive mode via `[[ -t 0 ]]` (stdin is TTY) or unguarded `read_key` calls — `capture_output=True` only pipes stdout/stderr, leaving stdin inherited from the parent terminal.
 - **fisher needs `--interactive`**: Fisher uses `$last_pid` for job control which fails in non-interactive shells ([fisher#608](https://github.com/jorgebucaran/fisher/issues/608)).
-- **Task ordering**: `brew_bundle` runs last because `mo_clean` internally runs `brew autoremove`. Running bundle cleanup after avoids the [cascading removal bug](https://github.com/homebrew/brew/issues/21350).
+- **Task ordering**: `brew_update` → `brew_upgrade` run first (fresh package DB before any operations). `brew_cleanup` runs after `mo_clean` (which runs `brew autoremove`). `brew_bundle` runs last to avoid the [cascading removal bug](https://github.com/homebrew/brew/issues/21350).
 - **Brew prefix detection**: `subprocess.run(["brew", "--prefix"])` with architecture fallback. Portable across Apple Silicon and Intel.
 - **Missed schedules**: launchd catches up after sleep (coalesced). Powered off → skipped until next Monday.
-- **Interactive detection**: `sys.stdout.isatty()` switches between Rich console (interactive) and Python logging (non-interactive/launchd). Same code path, different presentation. Zero visual change to launchd logs.
+- **Interactive detection**: `sys.stdout.isatty()` switches between Rich Live table (interactive) and Python logging (non-interactive/launchd). Same code path, different presentation. Zero visual change to launchd logs.
+- **Rich Live TUI state separation**: `_TaskState` objects hold status/reason/duration; `_generate_table()` renders them. Debug output scrolls ABOVE the pinned table via `self._live.console.print()` — never put debug content into `_TaskState` or it overwrites the table. Task-name separator headers (`── taskname ──`) group output between tasks.
 - **Rich is a transitive dependency**: `typer>=0.12` requires `rich>=12.3.0`. Homebrew formula already bundles it. Using Rich adds zero new runtime dependencies.
-- **osascript notifications**: `/usr/bin/osascript -e 'display notification ...'` works from launchd user agents. 5-second timeout, never fatal. Notification permissions may need granting in System Settings > Notifications.
+- **Notifications always fire**: `notify()` is called regardless of `output.interactive`. Do not add back `not output.interactive` guard — the headless + notification + click-to-act pattern means notifications are the user's feedback channel for scheduled runs, and a summary for interactive runs.
+- **terminal-notifier preferred, osascript fallback**: `shutil.which("terminal-notifier")` tries the richer tool first. Fallback to osascript silently loses `-group` (dedup), `-activate` (focus terminal), and `-open` (click action). `terminal-notifier` is optional — install via `brew install terminal-notifier`.
+- **Bundle ID detection chain**: `CMUX_BUNDLE_ID` env var → Ghostty.app plist via `defaults read` → `com.apple.Terminal` fallback. Used by `terminal-notifier -activate` to focus the correct terminal on notification click.
 - **TaskResult over bool**: `run_task` returns a structured `TaskResult(name, status, reason, duration)` instead of `bool`. Enables distinct skip/fail reporting, per-task timing, and notification content — without coupling task execution to output formatting.
+- **Per-task frequency scheduling**: Tasks run on weekly or monthly schedules. State tracked in `~/.local/state/maintenance/last-run.json` (XDG_STATE_HOME). Thresholds are 6 days for weekly and 27 days for monthly (not 7/30 — buffer for launchd schedule drift after sleep/reboot). Timestamps only update on successful non-dry-run execution. Corrupt/missing state file silently triggers re-run.
+- **`force_tasks` sentinel semantics**: `force_tasks=None` (no `--force` flag) means normal scheduling — all tasks run, frequency check is bypassed entirely. `force_tasks=set()` (empty set from `--force` with no valid tasks) means frequency checking is active but no tasks are forced — all tasks follow their schedule. `force_tasks={"brew_update"}` forces only that task. The `is not None` check in `_run()` is the gate — do not change it to truthiness check or frequency will never apply.
+- **brew_bundle has duplicated frequency check**: The `brew_bundle` block in `run_all_tasks()` has its own frequency check (lines 272-281) separate from `_run()` because it validates Brewfile existence before calling `_run()`. If refactoring `_run()` frequency logic, update the brew_bundle block too.
+- **No Python FileHandler for log file**: launchd redirects stderr to the log file. Adding a Python `FileHandler` to the same path causes duplicate lines. Python's rotating handlers (`TimedRotatingFileHandler`) don't work for periodic CLI tools (process exits between runs, rotation never triggers). Log rotation is handled by macOS newsyslog.d instead.
 
 ## Non-Obvious Constraints
 
@@ -53,6 +62,9 @@ Entry point: `maintenance.cli:app` (registered in pyproject.toml `[project.scrip
 - **`repository_dispatch` is fire-and-forget** — the source repo won't know if the tap update succeeded. Check the homebrew-tap Actions tab after a release to verify.
 - **`.release-please-manifest.json` must exist** alongside `release-please-config.json`. Tracks current version (`{".": "1.0.0"}`). Without it, release-please-action@v4 fails with "Missing required manifest versions." release-please updates this file automatically on release.
 - **GitHub App token `repositories:` scoping** — the `bump-tap` job scopes its token to `repositories: homebrew-tap` so the dispatch has write access to the target repo. Without this parameter, the token defaults to the current repo only.
+- **Do not open terminal windows from launchd** — research confirmed this is fragile (focus stealing, macOS 13+ permission escalation, missing env vars, broken when screen locked). Use headless + notification + click-to-act instead.
+- **newsyslog.d rotation config** is printed by `maintenance setup` but NOT auto-installed (requires `sudo tee /etc/newsyslog.d/maintenance.conf`). Format: monthly rotation on 1st at midnight (`$M1D0`), 12 backups, gzip (`GN`), no signal.
+- **`terminal-notifier` is optional** — installed via `brew install terminal-notifier`. When absent, notifications work via osascript but lose click actions and deduplication.
 
 ## Release Process
 
@@ -80,12 +92,15 @@ This repo serves as a reference for Python CLI projects using Typer + UV.
 - Config pattern: TOML file + env var overrides + auto-discovery fallback chain
 
 **Adapt:**
-- Rich dual-mode output (`isatty()` detection) for any CLI running interactively AND via scheduler
-- osascript notifications for any macOS launchd service needing user feedback
+- Rich Live table TUI (`isatty()` detection + `_TaskState` + `Live` + `console.print()` above pinned table) for any CLI running interactively AND via scheduler
+- terminal-notifier with osascript fallback for any macOS launchd service needing actionable notifications (click-to-focus, click-to-open-log)
 - `repository_dispatch` + GitHub App for cross-repo automation across multiple source repos
 - `subprocess.run(stdin=subprocess.DEVNULL)` for any CLI orchestrator wrapping interactive tools — prevents invisible prompt hangs when stdout is piped but stdin leaks from parent terminal
+- Per-task frequency scheduling with XDG state file (`~/.local/state/<app>/last-run.json`) + threshold buffers for any periodic CLI tool
+- newsyslog.d config generation via setup command for any macOS launchd service needing log rotation (macOS built-in, zero deps, no Python rotating handlers needed)
 
 **Project-specific (do not copy):**
 - Mole CLI wrapper and sudo/HOME/sudoers configuration
 - Task auto-detection via `shutil.which()` (specific to multi-tool orchestrator)
 - Homebrew tap formula + poet resource regeneration
+- brew_bundle Brewfile validation and duplicated frequency check
