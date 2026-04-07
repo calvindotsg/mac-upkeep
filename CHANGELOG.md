@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/calvindotsg/maintenance/compare/v1.1.1...v1.2.0) (2026-04-07)
+
+
+### Features
+
+* add brew tasks, frequency scheduling, live TUI, and actionable notifications ([#5](https://github.com/calvindotsg/maintenance/issues/5)) ([9ee2381](https://github.com/calvindotsg/maintenance/commit/9ee23811fa60fbb483b4ff695aabc92a8c23899c))
+
 ## [1.1.1](https://github.com/calvindotsg/maintenance/compare/v1.1.0...v1.1.1) (2026-04-06)
 
 
