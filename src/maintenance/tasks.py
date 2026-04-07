@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import shutil
 import subprocess
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -19,7 +21,62 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("maintenance")
 
+ALL_TASK_NAMES = [
+    "brew_update",
+    "brew_upgrade",
+    "gcloud",
+    "pnpm",
+    "uv",
+    "fisher",
+    "mo_clean",
+    "mo_optimize",
+    "mo_purge",
+    "brew_cleanup",
+    "brew_bundle",
+]
+
 ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
+
+# State file for per-task frequency tracking
+_xdg_state = os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state"))
+_STATE_DIR = Path(_xdg_state) / "maintenance"
+_STATE_FILE = _STATE_DIR / "last-run.json"
+FREQUENCY_THRESHOLDS = {"weekly": 6, "monthly": 27}  # days (buffer for schedule drift)
+
+
+def _load_state() -> dict[str, str]:
+    """Load last-run timestamps. Returns empty dict on missing/corrupt file."""
+    try:
+        return json.loads(_STATE_FILE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_state(state: dict[str, str]) -> None:
+    """Write state file."""
+    _STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+def _should_run(task_key: str, config: Config) -> bool:
+    """Check if enough time has elapsed since last run for this task's frequency."""
+    state = _load_state()
+    last_run_str = state.get(task_key)
+    if not last_run_str:
+        return True
+    try:
+        last_run = datetime.fromisoformat(last_run_str)
+    except ValueError:
+        return True
+    threshold_days = FREQUENCY_THRESHOLDS.get(config.get_frequency(task_key), 6)
+    return (datetime.now() - last_run).days >= threshold_days
+
+
+def _update_last_run(task_key: str) -> None:
+    """Record successful task completion timestamp."""
+    state = _load_state()
+    state[task_key] = datetime.now().isoformat(timespec="seconds")
+    _save_state(state)
 
 
 def get_brew_prefix() -> str:
@@ -27,9 +84,7 @@ def get_brew_prefix() -> str:
     brew = shutil.which("brew")
     if brew:
         try:
-            result = subprocess.run(
-                [brew, "--prefix"], capture_output=True, text=True, timeout=5
-            )
+            result = subprocess.run([brew, "--prefix"], capture_output=True, text=True, timeout=5)
             return result.stdout.strip()
         except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
             pass
@@ -106,29 +161,49 @@ def _run(
     output: Output,
     dry_run: bool,
     needs_sudo: bool = False,
+    force_tasks: set[str] | None = None,
 ) -> TaskResult:
     """Run one task with full output lifecycle: start → execute → done.
 
     task_start is only called for tasks that will actually execute (not for
     immediately-skipped tasks), to avoid logging "Running X..." before a skip.
+    Frequency checking skips tasks that ran recently unless forced.
     """
     task_key = name.lower().replace(" ", "_")
+
+    # Frequency check (before enabled/installed checks)
+    if (
+        force_tasks is not None
+        and task_key not in force_tasks
+        and not dry_run
+        and not _should_run(task_key, config)
+    ):
+        result = TaskResult(name, "skipped", reason="ran recently")
+        output.task_done(result)
+        return result
+
     primary_cmd = cmd[0] if not needs_sudo else cmd[2]
-    will_run = (
-        config.is_enabled(task_key)
-        and shutil.which(primary_cmd) is not None
-    )
+    will_run = config.is_enabled(task_key) and shutil.which(primary_cmd) is not None
     if will_run:
         output.task_start(name)
     result = run_task(
         name, cmd, config=config, output=output, dry_run=dry_run, needs_sudo=needs_sudo
     )
     output.task_done(result)
+
+    # Record timestamp on success (not dry-run)
+    if result.status == "ok" and result.reason != "dry-run":
+        _update_last_run(task_key)
+
     return result
 
 
 def run_all_tasks(
-    *, config: Config, output: Output, dry_run: bool = False
+    *,
+    config: Config,
+    output: Output,
+    dry_run: bool = False,
+    force_tasks: set[str] | None = None,
 ) -> list[TaskResult]:
     """Run all maintenance tasks in order. Returns list of task results."""
     brew_prefix = get_brew_prefix()
@@ -136,6 +211,8 @@ def run_all_tasks(
     results: list[TaskResult] = []
 
     tasks = [
+        ("brew_update", ["brew", "update"]),
+        ("brew_upgrade", ["brew", "upgrade"]),
         ("gcloud", ["gcloud", "components", "update", "--quiet"]),
         ("pnpm", ["pnpm", "store", "prune"]),
         ("uv", ["uv", "cache", "prune", "--force"]),
@@ -144,7 +221,9 @@ def run_all_tasks(
     ]
 
     for name, cmd in tasks:
-        results.append(_run(name, cmd, config=config, output=output, dry_run=dry_run))
+        results.append(
+            _run(name, cmd, config=config, output=output, dry_run=dry_run, force_tasks=force_tasks)
+        )
 
     # sudo tasks: env_keep in sudoers preserves HOME (not /var/root)
     sudo_tasks = [
@@ -154,18 +233,53 @@ def run_all_tasks(
     for name, cmd in sudo_tasks:
         results.append(
             _run(
-                name, ["sudo", "-n"] + cmd,
-                config=config, output=output, dry_run=dry_run, needs_sudo=True,
+                name,
+                ["sudo", "-n"] + cmd,
+                config=config,
+                output=output,
+                dry_run=dry_run,
+                needs_sudo=True,
+                force_tasks=force_tasks,
             )
         )
 
     # mo purge: no sudo, permanent rm -rf, no age threshold
     results.append(
-        _run("mo_purge", [mo_bin, "purge"], config=config, output=output, dry_run=dry_run)
+        _run(
+            "mo_purge",
+            [mo_bin, "purge"],
+            config=config,
+            output=output,
+            dry_run=dry_run,
+            force_tasks=force_tasks,
+        )
+    )
+
+    # brew cleanup: after mo_clean's autoremove, before brew_bundle
+    results.append(
+        _run(
+            "brew_cleanup",
+            ["brew", "cleanup", "--prune=all"],
+            config=config,
+            output=output,
+            dry_run=dry_run,
+            force_tasks=force_tasks,
+        )
     )
 
     # brew bundle cleanup: runs last (mo clean runs autoremove — homebrew/brew#21350)
-    if config.is_enabled("brew_bundle"):
+    # Frequency check for brew_bundle (special case with Brewfile validation)
+    task_key = "brew_bundle"
+    if (
+        force_tasks is not None
+        and task_key not in force_tasks
+        and not dry_run
+        and not _should_run(task_key, config)
+    ):
+        r = TaskResult("brew_bundle", "skipped", reason="ran recently")
+        output.task_done(r)
+        results.append(r)
+    elif config.is_enabled("brew_bundle"):
         if not config.brewfile or not Path(config.brewfile).is_file():
             r = TaskResult("brew_bundle", "skipped", reason="no Brewfile found")
             output.task_done(r)
@@ -182,6 +296,7 @@ def run_all_tasks(
                     config=config,
                     output=output,
                     dry_run=False,
+                    force_tasks=force_tasks,
                 )
             )
     else:

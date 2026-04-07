@@ -13,6 +13,8 @@ DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.toml"
 
 # All tasks enabled by default
 DEFAULT_TASKS = {
+    "brew_update": True,
+    "brew_upgrade": True,
     "gcloud": True,
     "pnpm": True,
     "uv": True,
@@ -20,7 +22,22 @@ DEFAULT_TASKS = {
     "mo_clean": True,
     "mo_optimize": True,
     "mo_purge": True,
+    "brew_cleanup": True,
     "brew_bundle": True,
+}
+
+DEFAULT_FREQUENCIES = {
+    "brew_update": "weekly",
+    "brew_upgrade": "weekly",
+    "gcloud": "monthly",
+    "pnpm": "monthly",
+    "uv": "monthly",
+    "fisher": "weekly",
+    "mo_clean": "weekly",
+    "mo_optimize": "weekly",
+    "mo_purge": "monthly",
+    "brew_cleanup": "monthly",
+    "brew_bundle": "weekly",
 }
 
 
@@ -32,6 +49,7 @@ class Config:
     brewfile: str | None = None
     notify: bool = True
     notify_sound: str = "Submarine"
+    frequencies: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_FREQUENCIES))
 
     @classmethod
     def load(cls, path: Path = DEFAULT_CONFIG_PATH) -> Config:
@@ -48,6 +66,10 @@ class Config:
                         config.tasks[task] = bool(enabled)
             if "paths" in data and "brewfile" in data["paths"]:
                 config.brewfile = data["paths"]["brewfile"]
+            if "frequency" in data:
+                for task, freq in data["frequency"].items():
+                    if task in config.frequencies:
+                        config.frequencies[task] = str(freq)
             if "notifications" in data:
                 notif = data["notifications"]
                 if "enabled" in notif:
@@ -61,6 +83,13 @@ class Config:
             env_val = os.environ.get(env_key)
             if env_val is not None:
                 config.tasks[task] = env_val.lower() not in ("false", "0", "no")
+
+        # Frequency env overrides
+        for task in DEFAULT_TASKS:
+            env_key = f"MAINTENANCE_{task.upper()}_FREQUENCY"
+            env_val = os.environ.get(env_key)
+            if env_val is not None:
+                config.frequencies[task] = env_val.lower()
 
         env_notify = os.environ.get("MAINTENANCE_NOTIFY")
         if env_notify is not None:
@@ -79,6 +108,10 @@ class Config:
     def is_enabled(self, task: str) -> bool:
         """Check if a task is enabled in config."""
         return self.tasks.get(task, True)
+
+    def get_frequency(self, task: str) -> str:
+        """Get the frequency for a task ('weekly' or 'monthly')."""
+        return self.frequencies.get(task, "weekly")
 
 
 def _discover_brewfile() -> str | None:

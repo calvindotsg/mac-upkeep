@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from maintenance.config import Config
-from maintenance.tasks import run_task, strip_ansi
+from maintenance.tasks import _should_run, _update_last_run, run_task, strip_ansi
 
 
 def test_strip_ansi_removes_color_codes():
@@ -74,3 +76,69 @@ def test_run_task_timeout_returns_failed(mock_which, mock_run):
     result = run_task("gcloud", ["echo", "test"], config=config)
     assert result.status == "failed"
     assert result.reason == "timed out"
+
+
+# --- Frequency scheduling tests ---
+
+
+def test_should_run_never_ran(tmp_path, monkeypatch):
+    monkeypatch.setattr("maintenance.tasks._STATE_FILE", tmp_path / "last-run.json")
+    config = Config()
+    assert _should_run("gcloud", config) is True
+
+
+def test_should_run_within_threshold(tmp_path, monkeypatch):
+    state_file = tmp_path / "last-run.json"
+    recent = (datetime.now() - timedelta(days=2)).isoformat(timespec="seconds")
+    state_file.write_text(json.dumps({"gcloud": recent}))
+    monkeypatch.setattr("maintenance.tasks._STATE_FILE", state_file)
+    config = Config()
+    config.frequencies["gcloud"] = "weekly"
+    assert _should_run("gcloud", config) is False
+
+
+def test_should_run_past_threshold(tmp_path, monkeypatch):
+    state_file = tmp_path / "last-run.json"
+    old = (datetime.now() - timedelta(days=8)).isoformat(timespec="seconds")
+    state_file.write_text(json.dumps({"gcloud": old}))
+    monkeypatch.setattr("maintenance.tasks._STATE_FILE", state_file)
+    config = Config()
+    config.frequencies["gcloud"] = "weekly"
+    assert _should_run("gcloud", config) is True
+
+
+def test_should_run_monthly_within_threshold(tmp_path, monkeypatch):
+    state_file = tmp_path / "last-run.json"
+    recent = (datetime.now() - timedelta(days=15)).isoformat(timespec="seconds")
+    state_file.write_text(json.dumps({"gcloud": recent}))
+    monkeypatch.setattr("maintenance.tasks._STATE_FILE", state_file)
+    config = Config()
+    config.frequencies["gcloud"] = "monthly"
+    assert _should_run("gcloud", config) is False
+
+
+def test_should_run_corrupt_timestamp(tmp_path, monkeypatch):
+    state_file = tmp_path / "last-run.json"
+    state_file.write_text(json.dumps({"gcloud": "not-a-date"}))
+    monkeypatch.setattr("maintenance.tasks._STATE_FILE", state_file)
+    config = Config()
+    assert _should_run("gcloud", config) is True
+
+
+def test_should_run_corrupt_json(tmp_path, monkeypatch):
+    state_file = tmp_path / "last-run.json"
+    state_file.write_text("{invalid json")
+    monkeypatch.setattr("maintenance.tasks._STATE_FILE", state_file)
+    config = Config()
+    assert _should_run("gcloud", config) is True
+
+
+def test_update_last_run_creates_state_file(tmp_path, monkeypatch):
+    state_dir = tmp_path / "maintenance"
+    state_file = state_dir / "last-run.json"
+    monkeypatch.setattr("maintenance.tasks._STATE_DIR", state_dir)
+    monkeypatch.setattr("maintenance.tasks._STATE_FILE", state_file)
+    _update_last_run("gcloud")
+    assert state_file.is_file()
+    state = json.loads(state_file.read_text())
+    assert "gcloud" in state

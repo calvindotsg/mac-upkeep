@@ -3,6 +3,8 @@
 # Environment variables (MAINTENANCE_<TASK>=false) override this file.
 
 [tasks]
+# brew_update = true
+# brew_upgrade = true
 # gcloud = true
 # pnpm = true
 # uv = true
@@ -10,7 +12,17 @@
 # mo_clean = true
 # mo_optimize = true
 # mo_purge = true
+# brew_cleanup = true
 # brew_bundle = true
+
+[frequency]
+# Default: "weekly". Options: "weekly", "monthly"
+# Recommended: monthly for cache pruning tasks
+# gcloud = "monthly"
+# pnpm = "monthly"
+# uv = "monthly"
+# mo_purge = "monthly"
+# brew_cleanup = "monthly"
 
 [paths]
 # Brewfile path (auto-detected from common locations if unset)
