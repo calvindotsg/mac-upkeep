@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.1](https://github.com/calvindotsg/maintenance/compare/v1.2.0...v1.2.1) (2026-04-07)
+
+
+### Bug Fixes
+
+* --force filter, frequency scheduling, task discoverability ([#9](https://github.com/calvindotsg/maintenance/issues/9)) ([26a5ac1](https://github.com/calvindotsg/maintenance/commit/26a5ac123406836266480f246ba4c7f1b8789cd7))
+
+
+### Documentation
+
+* **claude:** document v1.2.0 patterns for AI agent effectiveness ([#7](https://github.com/calvindotsg/maintenance/issues/7)) ([a6d5f0d](https://github.com/calvindotsg/maintenance/commit/a6d5f0dca8c51cb2b97e71ea35c95771f9fb8abf))
+
 ## [1.2.0](https://github.com/calvindotsg/maintenance/compare/v1.1.1...v1.2.0) (2026-04-07)
 
 
