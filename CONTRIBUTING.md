@@ -22,6 +22,10 @@ uv run pytest                     # Run tests
 uv run pytest --cov               # With coverage
 ```
 
+## Dependencies
+
+After modifying `pyproject.toml` dependencies, run `uv lock` to update the lockfile. CI runs `uv lock --check` and will fail on stale lockfiles.
+
 ## Commit Conventions
 
 This project uses [Conventional Commits v1.0.0](https://www.conventionalcommits.org/en/v1.0.0/).

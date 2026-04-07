@@ -52,6 +52,7 @@ Entry point: `maintenance.cli:app` (registered in pyproject.toml `[project.scrip
 - **launchd PATH requires `std_service_path_env`**: launchd default PATH is `/usr/bin:/bin:/usr/sbin:/sbin`. Without `environment_variables PATH: std_service_path_env` in the formula service block, all Homebrew-installed tools fail `shutil.which()` auto-detection. Notifications fall back to osascript → click opens Script Editor. Only mole tasks work (full path via `get_brew_prefix()`).
 - **Frequency scheduling as safety net**: Prevents redundant runs from launchd coalescing, manual `maintenance run`, or formula regressions re-enabling RunAtLoad. Do not remove even with `run_at_load false`. Homebrew defaults `run_at_load` to `true` ([service.rb:55](https://github.com/Homebrew/brew/blob/main/Library/Homebrew/service.rb)) — undocumented in Formula Cookbook.
 - **No Python FileHandler for log file**: launchd redirects stderr to the log file. Adding a Python `FileHandler` to the same path causes duplicate lines. Python's rotating handlers (`TimedRotatingFileHandler`) don't work for periodic CLI tools (process exits between runs, rotation never triggers). Log rotation is handled by macOS newsyslog.d instead.
+- **uv.lock sync on release**: release-please bumps `pyproject.toml` version but can't run `uv lock`. The release workflow auto-updates `uv.lock` on the release-please PR branch (checkout → `uv lock` → commit). `uv lock --check` in test.yml catches stale lockfiles from any source. The check runs **before** `uv sync` — sync silently fixes staleness, masking the problem.
 
 ## Non-Obvious Constraints
 
@@ -76,8 +77,9 @@ Automated via release-please + homebrew-tap dispatch:
 
 1. Commit changes using conventional commits, push to main
 2. release-please creates a release PR (bumps version in `pyproject.toml`, updates CHANGELOG.md)
-3. Merge the release PR → GitHub release + tag created → `bump-tap` job dispatches to homebrew-tap automatically
-4. Verify: check homebrew-tap Actions tab for successful formula update
+3. Release workflow auto-updates `uv.lock` on the PR branch, test.yml validates via `uv lock --check`
+4. Merge the release PR → GitHub release + tag created → `bump-tap` job dispatches to homebrew-tap automatically
+5. Verify: check homebrew-tap Actions tab for successful formula update
 
 ## Reusable Patterns
 
