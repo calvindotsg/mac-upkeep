@@ -32,11 +32,11 @@ Entry point: `maintenance.cli:app` (registered in pyproject.toml `[project.scrip
 - **Graceful failure**: Each task wrapped in try/except. Individual failures log a warning and continue to the next task. The CLI always exits 0 unless interrupted (130).
 - **ANSI stripping**: Mole emits color codes even without TTY. `re.sub(r'\x1b\[[0-9;]*m', '', output)` strips them from captured output.
 - **sudo + HOME**: `sudo -n` with full path `$BREW_PREFIX/bin/mo`. Sudoers `env_keep += "HOME"` preserves user's home directory (otherwise `HOME=/var/root` and mole misses user caches).
-- **stdin closed for subprocesses**: `subprocess.run` passes `stdin=subprocess.DEVNULL` to prevent interactive tool hangs. Mole detects interactive mode via `[[ -t 0 ]]` (stdin is TTY) or unguarded `read_key` calls — `capture_output=True` only pipes stdout/stderr, leaving stdin inherited from the parent terminal.
+- **stdin closed for task subprocesses**: Task execution passes `stdin=subprocess.DEVNULL` to prevent interactive tool hangs. Mole detects interactive mode via `[[ -t 0 ]]` (stdin is TTY) or unguarded `read_key` calls. Utility calls (osascript `-e`, `defaults read`) don't need it — they never read stdin.
 - **fisher needs `--interactive`**: Fisher uses `$last_pid` for job control which fails in non-interactive shells ([fisher#608](https://github.com/jorgebucaran/fisher/issues/608)).
 - **Task ordering**: `brew_update` → `brew_upgrade` run first (fresh package DB before any operations). `brew_cleanup` runs after `mo_clean` (which runs `brew autoremove`). `brew_bundle` runs last to avoid the [cascading removal bug](https://github.com/homebrew/brew/issues/21350).
 - **Brew prefix detection**: `subprocess.run(["brew", "--prefix"])` with architecture fallback. Portable across Apple Silicon and Intel.
-- **Missed schedules**: launchd catches up after sleep (coalesced). Powered off → skipped until next Monday.
+- **Missed schedules**: Formula sets `run_at_load false` + `environment_variables PATH: std_service_path_env`. launchd only fires at the scheduled time with correct PATH. Powered off → skipped until next scheduled run. Frequency scheduling prevents duplicate runs from launchd coalescing after sleep.
 - **Interactive detection**: `sys.stdout.isatty()` switches between Rich Live table (interactive) and Python logging (non-interactive/launchd). Same code path, different presentation. Zero visual change to launchd logs.
 - **Rich Live TUI state separation**: `_TaskState` objects hold status/reason/duration; `_generate_table()` renders them. Debug output scrolls ABOVE the pinned table via `self._live.console.print()` — never put debug content into `_TaskState` or it overwrites the table. Task-name separator headers (`── taskname ──`) group output between tasks.
 - **Rich is a transitive dependency**: `typer>=0.12` requires `rich>=12.3.0`. Homebrew formula already bundles it. Using Rich adds zero new runtime dependencies.
@@ -45,8 +45,12 @@ Entry point: `maintenance.cli:app` (registered in pyproject.toml `[project.scrip
 - **Bundle ID detection chain**: `CMUX_BUNDLE_ID` env var → Ghostty.app plist via `defaults read` → `com.apple.Terminal` fallback. Used by `terminal-notifier -activate` to focus the correct terminal on notification click.
 - **TaskResult over bool**: `run_task` returns a structured `TaskResult(name, status, reason, duration)` instead of `bool`. Enables distinct skip/fail reporting, per-task timing, and notification content — without coupling task execution to output formatting.
 - **Per-task frequency scheduling**: Tasks run on weekly or monthly schedules. State tracked in `~/.local/state/maintenance/last-run.json` (XDG_STATE_HOME). Thresholds are 6 days for weekly and 27 days for monthly (not 7/30 — buffer for launchd schedule drift after sleep/reboot). Timestamps only update on successful non-dry-run execution. Corrupt/missing state file silently triggers re-run.
-- **`force_tasks` sentinel semantics**: `force_tasks=None` (no `--force` flag) means normal scheduling — all tasks run, frequency check is bypassed entirely. `force_tasks=set()` (empty set from `--force` with no valid tasks) means frequency checking is active but no tasks are forced — all tasks follow their schedule. `force_tasks={"brew_update"}` forces only that task. The `is not None` check in `_run()` is the gate — do not change it to truthiness check or frequency will never apply.
-- **brew_bundle has duplicated frequency check**: The `brew_bundle` block in `run_all_tasks()` has its own frequency check (lines 272-281) separate from `_run()` because it validates Brewfile existence before calling `_run()`. If refactoring `_run()` frequency logic, update the brew_bundle block too.
+- **`force_tasks` semantics**: `force_tasks=None` (no `--force`) means frequency scheduling applies — tasks skip if ran recently. `force_tasks={"task"}` runs only that task, frequency bypassed. `--force all` sets force_tasks to all task names (all run, frequency bypassed). The `is not None` check is the filter gate; `force_tasks is None` in the frequency check ensures forced tasks bypass scheduling.
+- **`_run()` filter-then-frequency contract**: `_run()` has two early-return checks in strict order: (1) filter (`force_tasks is not None and task_key not in force_tasks`) — unconditional; (2) frequency (`not dry_run and force_tasks is None and not _should_run()`) — conditional. Do not add conditions to the filter or remove the `force_tasks is None` guard from frequency.
+- **brew_bundle validates then delegates**: The brew_bundle block handles filter + validation (disabled, no Brewfile) then delegates to `_run()` for frequency + dry_run + execution. Do not add frequency or dry_run logic to the brew_bundle block.
+- **TASKS dict is the task registry**: `TASKS` dict in tasks.py is the single source of truth for task names and descriptions. `ALL_TASK_NAMES`, shell completion, and `maintenance tasks` derive from it. Adding a task requires 4 updates: `TASKS` (tasks.py), `DEFAULT_TASKS` (config.py), `DEFAULT_FREQUENCIES` (config.py), `run_all_tasks()` (tasks.py). `DEFAULT_TASKS`/`DEFAULT_FREQUENCIES` can't be derived from `TASKS` due to circular import (tasks.py → config.py).
+- **launchd PATH requires `std_service_path_env`**: launchd default PATH is `/usr/bin:/bin:/usr/sbin:/sbin`. Without `environment_variables PATH: std_service_path_env` in the formula service block, all Homebrew-installed tools fail `shutil.which()` auto-detection. Notifications fall back to osascript → click opens Script Editor. Only mole tasks work (full path via `get_brew_prefix()`).
+- **Frequency scheduling as safety net**: Prevents redundant runs from launchd coalescing, manual `maintenance run`, or formula regressions re-enabling RunAtLoad. Do not remove even with `run_at_load false`. Homebrew defaults `run_at_load` to `true` ([service.rb:55](https://github.com/Homebrew/brew/blob/main/Library/Homebrew/service.rb)) — undocumented in Formula Cookbook.
 - **No Python FileHandler for log file**: launchd redirects stderr to the log file. Adding a Python `FileHandler` to the same path causes duplicate lines. Python's rotating handlers (`TimedRotatingFileHandler`) don't work for periodic CLI tools (process exits between runs, rotation never triggers). Log rotation is handled by macOS newsyslog.d instead.
 
 ## Non-Obvious Constraints
@@ -60,7 +64,7 @@ Entry point: `maintenance.cli:app` (registered in pyproject.toml `[project.scrip
 - `poet -r <package>` calls PyPI API for the main package. Fails if not published to PyPI. Tap workflow gracefully falls back to updating only URL/sha256 (resource blocks unchanged). `brew update-python-resources` is the Homebrew-native alternative but requires macOS + Homebrew on the CI runner.
 - **Node.js formulas don't need resource blocks** — npm resolves the full dependency tree at install time via `std_npm_args`. Only URL + sha256 need updating on release.
 - **`repository_dispatch` is fire-and-forget** — the source repo won't know if the tap update succeeded. Check the homebrew-tap Actions tab after a release to verify.
-- **`.release-please-manifest.json` must exist** alongside `release-please-config.json`. Tracks current version (`{".": "1.0.0"}`). Without it, release-please-action@v4 fails with "Missing required manifest versions." release-please updates this file automatically on release.
+- **`.release-please-manifest.json` must exist** alongside `release-please-config.json`. Tracks current version (e.g. `{".": "1.2.0"}`). Without it, release-please-action@v4 fails with "Missing required manifest versions." release-please updates this file automatically on release.
 - **GitHub App token `repositories:` scoping** — the `bump-tap` job scopes its token to `repositories: homebrew-tap` so the dispatch has write access to the target repo. Without this parameter, the token defaults to the current repo only.
 - **Do not open terminal windows from launchd** — research confirmed this is fragile (focus stealing, macOS 13+ permission escalation, missing env vars, broken when screen locked). Use headless + notification + click-to-act instead.
 - **newsyslog.d rotation config** is printed by `maintenance setup` but NOT auto-installed (requires `sudo tee /etc/newsyslog.d/maintenance.conf`). Format: monthly rotation on 1st at midnight (`$M1D0`), 12 backups, gzip (`GN`), no signal.
@@ -88,7 +92,7 @@ This repo serves as a reference for Python CLI projects using Typer + UV.
 
 **Follow structure:**
 - CLAUDE.md: quick commands → architecture → key patterns → constraints → release → reusable patterns
-- README.md: install → tasks → usage → config → prerequisites
+- README.md: install → tasks → usage → configuration → license
 - Config pattern: TOML file + env var overrides + auto-discovery fallback chain
 
 **Adapt:**
@@ -103,4 +107,4 @@ This repo serves as a reference for Python CLI projects using Typer + UV.
 - Mole CLI wrapper and sudo/HOME/sudoers configuration
 - Task auto-detection via `shutil.which()` (specific to multi-tool orchestrator)
 - Homebrew tap formula + poet resource regeneration
-- brew_bundle Brewfile validation and duplicated frequency check
+- brew_bundle Brewfile validation and execution delegation

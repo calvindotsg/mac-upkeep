@@ -21,19 +21,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("maintenance")
 
-ALL_TASK_NAMES = [
-    "brew_update",
-    "brew_upgrade",
-    "gcloud",
-    "pnpm",
-    "uv",
-    "fisher",
-    "mo_clean",
-    "mo_optimize",
-    "mo_purge",
-    "brew_cleanup",
-    "brew_bundle",
-]
+TASKS: dict[str, str] = {
+    "brew_update": "Update Homebrew package database",
+    "brew_upgrade": "Upgrade outdated formulae and casks",
+    "gcloud": "Update Google Cloud SDK components",
+    "pnpm": "Prune pnpm content-addressable store",
+    "uv": "Prune uv package cache",
+    "fisher": "Update Fish shell plugins",
+    "mo_clean": "Clean system and user caches (sudo)",
+    "mo_optimize": "Optimize DNS, Spotlight, fonts, Dock (sudo)",
+    "mo_purge": "Remove old project artifacts",
+    "brew_cleanup": "Remove old versions and cache files",
+    "brew_bundle": "Remove packages not in Brewfile",
+}
+
+ALL_TASK_NAMES = list(TASKS)
 
 ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -163,21 +165,21 @@ def _run(
     needs_sudo: bool = False,
     force_tasks: set[str] | None = None,
 ) -> TaskResult:
-    """Run one task with full output lifecycle: start → execute → done.
+    """Run one task: start → execute → done.
 
-    task_start is only called for tasks that will actually execute (not for
-    immediately-skipped tasks), to avoid logging "Running X..." before a skip.
-    Frequency checking skips tasks that ran recently unless forced.
+    --force filters to selected tasks. Frequency applies by default;
+    forced tasks bypass it. task_start only called for tasks that execute.
     """
     task_key = name.lower().replace(" ", "_")
 
-    # Frequency check (before enabled/installed checks)
-    if (
-        force_tasks is not None
-        and task_key not in force_tasks
-        and not dry_run
-        and not _should_run(task_key, config)
-    ):
+    # --force filters to specific tasks
+    if force_tasks is not None and task_key not in force_tasks:
+        result = TaskResult(name, "skipped", reason="not selected")
+        output.task_done(result)
+        return result
+
+    # Frequency: skip if ran recently (no --force = frequency applies)
+    if not dry_run and force_tasks is None and not _should_run(task_key, config):
         result = TaskResult(name, "skipped", reason="ran recently")
         output.task_done(result)
         return result
@@ -267,41 +269,30 @@ def run_all_tasks(
         )
     )
 
-    # brew bundle cleanup: runs last (mo clean runs autoremove — homebrew/brew#21350)
-    # Frequency check for brew_bundle (special case with Brewfile validation)
+    # brew bundle cleanup: runs last (homebrew/brew#21350)
     task_key = "brew_bundle"
-    if (
-        force_tasks is not None
-        and task_key not in force_tasks
-        and not dry_run
-        and not _should_run(task_key, config)
-    ):
-        r = TaskResult("brew_bundle", "skipped", reason="ran recently")
+    if force_tasks is not None and task_key not in force_tasks:
+        r = TaskResult("brew_bundle", "skipped", reason="not selected")
         output.task_done(r)
         results.append(r)
-    elif config.is_enabled("brew_bundle"):
-        if not config.brewfile or not Path(config.brewfile).is_file():
-            r = TaskResult("brew_bundle", "skipped", reason="no Brewfile found")
-            output.task_done(r)
-            results.append(r)
-        elif dry_run:
-            r = TaskResult("brew_bundle", "ok", reason="dry-run")
-            output.task_done(r)
-            results.append(r)
-        else:
-            results.append(
-                _run(
-                    "brew_bundle",
-                    ["brew", "bundle", "cleanup", "--force", f"--file={config.brewfile}"],
-                    config=config,
-                    output=output,
-                    dry_run=False,
-                    force_tasks=force_tasks,
-                )
-            )
-    else:
+    elif not config.is_enabled("brew_bundle"):
         r = TaskResult("brew_bundle", "skipped", reason="disabled")
         output.task_done(r)
         results.append(r)
+    elif not config.brewfile or not Path(config.brewfile).is_file():
+        r = TaskResult("brew_bundle", "skipped", reason="no Brewfile found")
+        output.task_done(r)
+        results.append(r)
+    else:
+        results.append(
+            _run(
+                "brew_bundle",
+                ["brew", "bundle", "cleanup", "--force", f"--file={config.brewfile}"],
+                config=config,
+                output=output,
+                dry_run=dry_run,
+                force_tasks=force_tasks,
+            )
+        )
 
     return results

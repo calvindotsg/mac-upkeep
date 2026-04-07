@@ -11,30 +11,28 @@ brew services start maintenance  # Monday 12 PM weekly
 
 ## Tasks
 
-| Task | What it does |
-|------|-------------|
-| gcloud | Update Google Cloud SDK components |
-| pnpm | Remove unreferenced packages from content-addressable store |
-| uv | Remove unused Python package cache entries |
-| fisher | Update Fish shell plugins |
-| mo_clean | Remove system/user caches, logs, dev tool caches (sudo) |
-| mo_optimize | DNS, Spotlight, LaunchServices, fonts, Dock, Bluetooth (sudo) |
-| mo_purge | Remove old project artifacts: node_modules, .venv, target/ |
-| brew_bundle | Remove packages not listed in Brewfile |
+Homebrew updates, dev tool cache pruning (gcloud, pnpm, uv), Fish plugin updates, system optimization via [mole](https://github.com/nicehash/mole), and Brewfile enforcement.
 
-Tasks auto-detect installed tools. Missing tools are skipped.
+```bash
+maintenance tasks  # See all tasks with frequency and last-run status
+```
+
+Tasks auto-detect installed tools — missing tools are skipped. Each task runs on a weekly or monthly schedule. Use `--force <task>` to run a specific task on demand.
 
 ## Usage
 
 ```bash
-maintenance run              # Run all tasks
-maintenance run --dry-run    # Preview without executing
-maintenance run --debug      # Verbose output
-maintenance setup            # Print sudoers rules for this machine
-maintenance status           # Show brew service status
-maintenance logs             # View last 20 log lines
-maintenance logs -f          # Follow logs
-maintenance --version        # Show version
+maintenance run                       # Run tasks (frequency-checked)
+maintenance run --dry-run             # Preview without executing
+maintenance run --force brew_update   # Run only brew_update
+maintenance run --force all           # Run all, ignoring schedule
+maintenance run --debug               # Verbose output
+maintenance tasks                     # List tasks with status
+maintenance setup                     # Print sudoers rules
+maintenance status                    # Show brew service status
+maintenance logs                      # View last 20 log lines
+maintenance logs -f                   # Follow logs
+maintenance --version                 # Show version
 ```
 
 ## Configuration
@@ -46,36 +44,23 @@ mkdir -p ~/.config/maintenance
 cp "$(brew --prefix)/share/maintenance/config.example.toml" ~/.config/maintenance/config.toml
 ```
 
-All tasks default to enabled. Set any to `false` to disable:
+All tasks default to enabled. Disable via config or environment variable:
 
 ```toml
 [tasks]
 gcloud = false       # Skip gcloud updates
 mo_optimize = false  # Skip system optimization
 
+[frequency]
+gcloud = "monthly"   # Override schedule (weekly or monthly)
+
 [paths]
 brewfile = "~/.config/Brewfile"
 ```
 
-Environment variables override the config file:
-
 ```bash
-MAINTENANCE_GCLOUD=false maintenance run
+MAINTENANCE_GCLOUD=false maintenance run  # Env vars override config
 ```
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MAINTENANCE_GCLOUD` | `true` | Update gcloud components |
-| `MAINTENANCE_PNPM` | `true` | Prune pnpm store |
-| `MAINTENANCE_UV` | `true` | Prune uv cache |
-| `MAINTENANCE_FISHER` | `true` | Update Fish plugins |
-| `MAINTENANCE_MO_CLEAN` | `true` | Clean caches (requires sudo) |
-| `MAINTENANCE_MO_OPTIMIZE` | `true` | Optimize macOS (requires sudo) |
-| `MAINTENANCE_MO_PURGE` | `true` | Remove project artifacts |
-| `MAINTENANCE_BREW_BUNDLE` | `true` | Brewfile cleanup |
-| `MAINTENANCE_BREWFILE` | auto-detect | Path to Brewfile |
-
-## Prerequisites
 
 `mo_clean` and `mo_optimize` require passwordless sudo for the `mo` binary:
 

@@ -34,6 +34,19 @@ def test_run_dry_run():
     assert result.exit_code == 0
 
 
+def test_tasks_command():
+    result = runner.invoke(app, ["tasks"])
+    assert result.exit_code == 0
+    for name in ["brew_update", "gcloud", "mo_clean", "brew_bundle"]:
+        assert name in result.output
+
+
+def test_force_invalid_shows_valid_tasks():
+    result = runner.invoke(app, ["run", "--force", "nonexistent"])
+    assert result.exit_code == 1
+    assert "Valid tasks:" in result.output
+
+
 def test_notify_test_command_succeeds():
     from unittest.mock import patch
 
