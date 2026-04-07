@@ -146,7 +146,7 @@ def test_update_last_run_creates_state_file(tmp_path, monkeypatch):
 
 
 def test_run_frequency_skip(tmp_path, monkeypatch):
-    """_run() skips task with 'ran recently' when frequency check fails."""
+    """_run() skips task with 'ran recently' when frequency check applies (no --force)."""
     state_file = tmp_path / "last-run.json"
     recent = (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds")
     state_file.write_text(json.dumps({"gcloud": recent}))
@@ -160,7 +160,6 @@ def test_run_frequency_skip(tmp_path, monkeypatch):
         config=config,
         output=output,
         dry_run=False,
-        force_tasks=set(),
     )
     assert result.status == "skipped"
     assert result.reason == "ran recently"
@@ -169,7 +168,7 @@ def test_run_frequency_skip(tmp_path, monkeypatch):
 @patch("maintenance.tasks.subprocess.run")
 @patch("maintenance.tasks.shutil.which", return_value="/usr/bin/gcloud")
 def test_force_bypasses_frequency(mock_which, mock_run, tmp_path, monkeypatch):
-    """_run() executes task despite recent run when task is in force_tasks."""
+    """_run() executes forced task (filter passes, frequency bypassed)."""
     state_file = tmp_path / "last-run.json"
     recent = (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds")
     state_file.write_text(json.dumps({"gcloud": recent}))
@@ -188,6 +187,22 @@ def test_force_bypasses_frequency(mock_which, mock_run, tmp_path, monkeypatch):
         force_tasks={"gcloud"},
     )
     assert result.status == "ok"
+
+
+def test_force_filters_unselected_tasks():
+    """_run() skips tasks not in force_tasks with 'not selected'."""
+    config = Config()
+    output = Output(interactive=False)
+    result = _run(
+        "pnpm",
+        ["pnpm", "store", "prune"],
+        config=config,
+        output=output,
+        dry_run=False,
+        force_tasks={"gcloud"},
+    )
+    assert result.status == "skipped"
+    assert result.reason == "not selected"
 
 
 def test_dry_run_no_timestamp_update(tmp_path, monkeypatch):
