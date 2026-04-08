@@ -141,8 +141,9 @@ def test_load_task_defs_custom_task():
     assert "docker_prune" in task_defs
     assert task_defs["docker_prune"].command == "docker system prune -f"
     assert task_defs["docker_prune"].frequency == "monthly"
-    # Default order unchanged (custom tasks not in default order)
-    assert "docker_prune" not in run_order
+    # Custom tasks auto-appended to default order
+    assert "docker_prune" in run_order
+    assert run_order[-1] == "docker_prune"
 
 
 def test_load_task_defs_user_run_order():
@@ -165,6 +166,134 @@ def test_load_task_defs_env_frequency_override(monkeypatch):
     variables = {"BREW_PREFIX": "/opt/homebrew", "BREWFILE": "", "HOME": "/users/me"}
     task_defs, _ = load_task_defs(None, variables)
     assert task_defs["gcloud"].frequency == "weekly"
+
+
+# --- Detect auto-inference ---
+
+
+def test_detect_auto_inference_simple():
+    variables = {"BREW_PREFIX": "/opt/homebrew", "BREWFILE": "", "HOME": "/users/me"}
+    user_data = {
+        "tasks": {
+            "docker_prune": {
+                "description": "Prune Docker",
+                "command": "docker system prune -f",
+                "frequency": "monthly",
+            }
+        }
+    }
+    task_defs, _ = load_task_defs(user_data, variables)
+    assert task_defs["docker_prune"].detect == "docker"
+
+
+def test_detect_auto_inference_with_variables():
+    variables = {"BREW_PREFIX": "/opt/homebrew", "BREWFILE": "", "HOME": "/users/me"}
+    # mo_purge has no explicit detect in defaults.toml — wait, it does.
+    # Use a custom task with a path command to test variable resolution + inference
+    user_data = {
+        "tasks": {
+            "custom_bin": {
+                "description": "Run custom",
+                "command": "${BREW_PREFIX}/bin/custom arg1",
+                "frequency": "weekly",
+            }
+        }
+    }
+    task_defs, _ = load_task_defs(user_data, variables)
+    assert task_defs["custom_bin"].detect == "/opt/homebrew/bin/custom"
+
+
+def test_detect_preserves_explicit():
+    variables = {"BREW_PREFIX": "/opt/homebrew", "BREWFILE": "", "HOME": "/users/me"}
+    task_defs, _ = load_task_defs(None, variables)
+    # gcloud has explicit detect="gcloud" in defaults.toml
+    assert task_defs["gcloud"].detect == "gcloud"
+    # brew_update has explicit detect="brew"
+    assert task_defs["brew_update"].detect == "brew"
+
+
+# --- Validation ---
+
+
+def test_validation_empty_command():
+    import pytest
+
+    variables = {"BREW_PREFIX": "/opt/homebrew", "BREWFILE": "", "HOME": "/users/me"}
+    user_data = {
+        "tasks": {
+            "bad_task": {
+                "description": "No command",
+                "command": "",
+                "frequency": "weekly",
+            }
+        }
+    }
+    with pytest.raises(ValueError, match="has no command"):
+        load_task_defs(user_data, variables)
+
+
+def test_validation_invalid_frequency():
+    import pytest
+
+    variables = {"BREW_PREFIX": "/opt/homebrew", "BREWFILE": "", "HOME": "/users/me"}
+    user_data = {
+        "tasks": {
+            "bad_freq": {
+                "description": "Bad frequency",
+                "command": "echo hello",
+                "frequency": "daily",
+            }
+        }
+    }
+    with pytest.raises(ValueError, match="must be 'weekly' or 'monthly'"):
+        load_task_defs(user_data, variables)
+
+
+def test_validation_run_order_unknown_task():
+    import pytest
+
+    variables = {"BREW_PREFIX": "/opt/homebrew", "BREWFILE": "", "HOME": "/users/me"}
+    user_data = {"run": {"order": ["brew_update", "nonexistent_task"]}}
+    with pytest.raises(ValueError, match="unknown task 'nonexistent_task'"):
+        load_task_defs(user_data, variables)
+
+
+# --- Custom task ordering ---
+
+
+def test_custom_task_appended_to_default_order():
+    variables = {"BREW_PREFIX": "/opt/homebrew", "BREWFILE": "", "HOME": "/users/me"}
+    user_data = {
+        "tasks": {
+            "my_task": {
+                "description": "My task",
+                "command": "echo hello",
+                "frequency": "weekly",
+            }
+        }
+    }
+    _, run_order = load_task_defs(user_data, variables)
+    # Custom task appended after all 11 defaults
+    assert "my_task" in run_order
+    assert run_order[-1] == "my_task"
+    assert len(run_order) == 12
+
+
+def test_custom_task_not_duplicated_with_explicit_order():
+    variables = {"BREW_PREFIX": "/opt/homebrew", "BREWFILE": "", "HOME": "/users/me"}
+    user_data = {
+        "tasks": {
+            "my_task": {
+                "description": "My task",
+                "command": "echo hello",
+                "frequency": "weekly",
+            }
+        },
+        "run": {"order": ["brew_update", "my_task"]},
+    }
+    _, run_order = load_task_defs(user_data, variables)
+    assert run_order == ["brew_update", "my_task"]
+    assert run_order.count("my_task") == 1
 
 
 # --- Config.load ---

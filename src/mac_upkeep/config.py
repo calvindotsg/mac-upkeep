@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.resources
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tomllib
@@ -125,6 +126,23 @@ def load_task_defs(
         # User run order replaces default entirely
         if "run" in user_data and "order" in user_data["run"]:
             run_order = user_data["run"]["order"]
+        else:
+            # Auto-append custom tasks to default order
+            for name in user_data.get("tasks", {}):
+                if name not in run_order:
+                    run_order.append(name)
+
+    # Validate task definitions
+    for name, td in task_defs.items():
+        if not td.command:
+            raise ValueError(f"Task '{name}' has no command")
+        if td.frequency not in ("weekly", "monthly"):
+            raise ValueError(
+                f"Task '{name}': frequency must be 'weekly' or 'monthly', got '{td.frequency}'"
+            )
+    for entry in run_order:
+        if entry not in task_defs:
+            raise ValueError(f"run.order references unknown task '{entry}'")
 
     # Env var overrides (MAC_UPKEEP_<TASK>=false, MAC_UPKEEP_<TASK>_FREQUENCY=monthly)
     for task_name, td in task_defs.items():
@@ -145,6 +163,11 @@ def load_task_defs(
             td.detect = resolve_variables(td.detect, variables)
         if td.require_file:
             td.require_file = resolve_variables(td.require_file, variables)
+
+    # Auto-infer detect from command for tasks that don't set it
+    for td in task_defs.values():
+        if not td.detect and td.command:
+            td.detect = shlex.split(td.command)[0]
 
     return task_defs, run_order
 
