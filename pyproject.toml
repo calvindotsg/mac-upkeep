@@ -23,10 +23,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/calvindotsg/maintenance"
-Repository = "https://github.com/calvindotsg/maintenance"
-Issues = "https://github.com/calvindotsg/maintenance/issues"
-Changelog = "https://github.com/calvindotsg/maintenance/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/calvindotsg/mac-upkeep"
+Repository = "https://github.com/calvindotsg/mac-upkeep"
+Issues = "https://github.com/calvindotsg/mac-upkeep/issues"
+Changelog = "https://github.com/calvindotsg/mac-upkeep/blob/main/CHANGELOG.md"
 
 [project.scripts]
 mac-upkeep = "mac_upkeep.cli:app"

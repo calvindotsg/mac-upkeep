@@ -69,7 +69,7 @@ jobs:
             {
               "formula": "mac-upkeep",
               "version": "${{ needs.release-please.outputs.tag_name }}",
-              "url": "https://github.com/calvindotsg/maintenance/archive/refs/tags/${{ needs.release-please.outputs.tag_name }}.tar.gz",
+              "url": "https://github.com/calvindotsg/mac-upkeep/archive/refs/tags/${{ needs.release-please.outputs.tag_name }}.tar.gz",
               "type": "python"
             }
 
