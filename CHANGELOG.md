@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.1.0](https://github.com/calvindotsg/maintenance/compare/v2.0.0...v2.1.0) (2026-04-08)
+
+
+### Features
+
+* custom task support, detect auto-inference, validation ([#16](https://github.com/calvindotsg/maintenance/issues/16)) ([d8af4e6](https://github.com/calvindotsg/maintenance/commit/d8af4e62620ebbf1088e0e55c9faf7cdbe0f0785))
+* PyPI publishing and platform guard ([#18](https://github.com/calvindotsg/maintenance/issues/18)) ([af5e341](https://github.com/calvindotsg/maintenance/commit/af5e341e0798e7cd5e997de5d9dea17897ff369e))
+
 ## [2.0.0](https://github.com/calvindotsg/maintenance/compare/v1.2.1...v2.0.0) (2026-04-08)
 
 
