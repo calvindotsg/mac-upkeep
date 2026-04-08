@@ -71,7 +71,7 @@ class Output:
             else:
                 from rich.text import Text
 
-                self._console.print(Text(f"Maintenance{suffix}", style="bold"))
+                self._console.print(Text(f"mac-upkeep{suffix}", style="bold"))
                 self._console.print()
         else:
             logger.info("Starting mac-upkeep%s...", suffix)
@@ -86,7 +86,7 @@ class Output:
         completed = sum(1 for t in self._task_states if t.status not in ("pending", "running"))
         total = len(self._task_states)
         suffix = " (dry-run)" if self._dry_run else ""
-        title = f"Maintenance{suffix} [{completed}/{total}]"
+        title = f"mac-upkeep{suffix} [{completed}/{total}]"
 
         table = Table(title=title, title_style="bold", show_header=False, box=None, padding=(0, 2))
         table.add_column("icon", width=2)

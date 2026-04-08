@@ -420,7 +420,7 @@ def logs(
     Logs are written by brew services to $(brew --prefix)/var/log/mac-upkeep.log.
     """
     brew_prefix = get_brew_prefix()
-    log_file = Path(brew_prefix) / "var" / "log" / "mac_upkeep.log"
+    log_file = Path(brew_prefix) / "var" / "log" / "mac-upkeep.log"
 
     if not log_file.is_file():
         typer.echo(f"No log file found at {log_file}")
