@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -13,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from maintenance.config import Config
+from maintenance.config import Config, TaskDef, load_default_task_names
 from maintenance.output import TaskResult
 
 if TYPE_CHECKING:
@@ -21,21 +22,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("maintenance")
 
-TASKS: dict[str, str] = {
-    "brew_update": "Update Homebrew package database",
-    "brew_upgrade": "Upgrade outdated formulae and casks",
-    "gcloud": "Update Google Cloud SDK components",
-    "pnpm": "Prune pnpm content-addressable store",
-    "uv": "Prune uv package cache",
-    "fisher": "Update Fish shell plugins",
-    "mo_clean": "Clean system and user caches (sudo)",
-    "mo_optimize": "Optimize DNS, Spotlight, fonts, Dock (sudo)",
-    "mo_purge": "Remove old project artifacts",
-    "brew_cleanup": "Remove old versions and cache files",
-    "brew_bundle": "Remove packages not in Brewfile",
-}
-
-ALL_TASK_NAMES = list(TASKS)
+# Load task names from bundled defaults.toml at import time (for shell completion)
+TASKS, _DEFAULT_ORDER = load_default_task_names()
+ALL_TASK_NAMES = list(_DEFAULT_ORDER)
 
 ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -81,21 +70,25 @@ def _update_last_run(task_key: str) -> None:
     _save_state(state)
 
 
-def get_brew_prefix() -> str:
-    """Detect Homebrew prefix (portable: Apple Silicon /opt/homebrew, Intel /usr/local)."""
-    brew = shutil.which("brew")
-    if brew:
-        try:
-            result = subprocess.run([brew, "--prefix"], capture_output=True, text=True, timeout=5)
-            return result.stdout.strip()
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
-            pass
-    return "/opt/homebrew" if os.uname().machine == "arm64" else "/usr/local"
-
-
 def strip_ansi(text: str) -> str:
     """Remove ANSI color codes from text."""
     return ANSI_PATTERN.sub("", text)
+
+
+def _build_cmd(td: TaskDef) -> list[str]:
+    """Convert a TaskDef into a subprocess command list.
+
+    Shell and sudo are composable: both branches merge before the sudo check.
+    """
+    if td.shell:
+        # e.g., "fish --interactive -c" + "fisher update"
+        # → ["fish", "--interactive", "-c", "fisher update"]
+        cmd = td.shell.split() + [td.command]
+    else:
+        cmd = shlex.split(td.command)
+    if td.sudo:
+        cmd = ["sudo", "-n"] + cmd
+    return cmd
 
 
 def run_task(
@@ -105,7 +98,8 @@ def run_task(
     config: Config,
     output: Output | None = None,
     dry_run: bool = False,
-    needs_sudo: bool = False,
+    detect: str = "",
+    timeout: int = 300,
 ) -> TaskResult:
     """Execute a maintenance task with auto-detection and graceful failure.
 
@@ -117,8 +111,8 @@ def run_task(
         return TaskResult(name, "skipped", reason="disabled")
 
     # Check if the primary command exists
-    primary_cmd = cmd[0] if not needs_sudo else cmd[2]  # skip sudo -n
-    if not shutil.which(primary_cmd):
+    detect_cmd = detect or cmd[0]
+    if not shutil.which(detect_cmd):
         return TaskResult(name, "skipped", reason="not installed")
 
     if dry_run:
@@ -130,7 +124,7 @@ def run_task(
             cmd,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=timeout,
             stdin=subprocess.DEVNULL,
         )
         duration = time.monotonic() - start
@@ -162,8 +156,9 @@ def _run(
     config: Config,
     output: Output,
     dry_run: bool,
-    needs_sudo: bool = False,
     force_tasks: set[str] | None = None,
+    detect: str = "",
+    timeout: int = 300,
 ) -> TaskResult:
     """Run one task: start → execute → done.
 
@@ -184,12 +179,18 @@ def _run(
         output.task_done(result)
         return result
 
-    primary_cmd = cmd[0] if not needs_sudo else cmd[2]
-    will_run = config.is_enabled(task_key) and shutil.which(primary_cmd) is not None
+    detect_cmd = detect or cmd[0]
+    will_run = config.is_enabled(task_key) and shutil.which(detect_cmd) is not None
     if will_run:
         output.task_start(name)
     result = run_task(
-        name, cmd, config=config, output=output, dry_run=dry_run, needs_sudo=needs_sudo
+        name,
+        cmd,
+        config=config,
+        output=output,
+        dry_run=dry_run,
+        detect=detect,
+        timeout=timeout,
     )
     output.task_done(result)
 
@@ -208,90 +209,37 @@ def run_all_tasks(
     force_tasks: set[str] | None = None,
 ) -> list[TaskResult]:
     """Run all maintenance tasks in order. Returns list of task results."""
-    brew_prefix = get_brew_prefix()
-    mo_bin = f"{brew_prefix}/bin/mo"
     results: list[TaskResult] = []
 
-    tasks = [
-        ("brew_update", ["brew", "update"]),
-        ("brew_upgrade", ["brew", "upgrade"]),
-        ("gcloud", ["gcloud", "components", "update", "--quiet"]),
-        ("pnpm", ["pnpm", "store", "prune"]),
-        ("uv", ["uv", "cache", "prune", "--force"]),
-        # --interactive: fisher needs job control (jorgebucaran/fisher#608)
-        ("fisher", ["fish", "--interactive", "-c", "fisher update"]),
-    ]
+    for task_name in config.run_order:
+        td = config.task_defs.get(task_name)
+        if td is None:
+            continue
 
-    for name, cmd in tasks:
-        results.append(
-            _run(name, cmd, config=config, output=output, dry_run=dry_run, force_tasks=force_tasks)
-        )
+        # require_file tasks: check filter → enabled → file exists
+        # (preserves current brew_bundle delegation pattern)
+        if td.require_file and not Path(td.require_file).is_file():
+            if force_tasks is not None and task_name not in force_tasks:
+                r = TaskResult(task_name, "skipped", reason="not selected")
+            elif not td.enabled:
+                r = TaskResult(task_name, "skipped", reason="disabled")
+            else:
+                r = TaskResult(task_name, "skipped", reason=f"file not found: {td.require_file}")
+            output.task_done(r)
+            results.append(r)
+            continue
 
-    # sudo tasks: env_keep in sudoers preserves HOME (not /var/root)
-    sudo_tasks = [
-        ("mo_clean", [mo_bin, "clean"]),
-        ("mo_optimize", [mo_bin, "optimize"]),
-    ]
-    for name, cmd in sudo_tasks:
+        cmd = _build_cmd(td)
         results.append(
             _run(
-                name,
-                ["sudo", "-n"] + cmd,
-                config=config,
-                output=output,
-                dry_run=dry_run,
-                needs_sudo=True,
-                force_tasks=force_tasks,
-            )
-        )
-
-    # mo purge: no sudo, permanent rm -rf, no age threshold
-    results.append(
-        _run(
-            "mo_purge",
-            [mo_bin, "purge"],
-            config=config,
-            output=output,
-            dry_run=dry_run,
-            force_tasks=force_tasks,
-        )
-    )
-
-    # brew cleanup: after mo_clean's autoremove, before brew_bundle
-    results.append(
-        _run(
-            "brew_cleanup",
-            ["brew", "cleanup", "--prune=all"],
-            config=config,
-            output=output,
-            dry_run=dry_run,
-            force_tasks=force_tasks,
-        )
-    )
-
-    # brew bundle cleanup: runs last (homebrew/brew#21350)
-    task_key = "brew_bundle"
-    if force_tasks is not None and task_key not in force_tasks:
-        r = TaskResult("brew_bundle", "skipped", reason="not selected")
-        output.task_done(r)
-        results.append(r)
-    elif not config.is_enabled("brew_bundle"):
-        r = TaskResult("brew_bundle", "skipped", reason="disabled")
-        output.task_done(r)
-        results.append(r)
-    elif not config.brewfile or not Path(config.brewfile).is_file():
-        r = TaskResult("brew_bundle", "skipped", reason="no Brewfile found")
-        output.task_done(r)
-        results.append(r)
-    else:
-        results.append(
-            _run(
-                "brew_bundle",
-                ["brew", "bundle", "cleanup", "--force", f"--file={config.brewfile}"],
+                task_name,
+                cmd,
                 config=config,
                 output=output,
                 dry_run=dry_run,
                 force_tasks=force_tasks,
+                detect=td.detect,
+                timeout=td.timeout,
             )
         )
 

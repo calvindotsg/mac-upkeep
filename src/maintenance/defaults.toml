@@ -1,0 +1,81 @@
+# Built-in task definitions for maintenance.
+# Users override in ~/.config/maintenance/config.toml
+
+[tasks.brew_update]
+description = "Update Homebrew package database"
+command = "brew update"
+detect = "brew"
+
+[tasks.brew_upgrade]
+description = "Upgrade outdated formulae and casks"
+command = "brew upgrade"
+detect = "brew"
+
+[tasks.gcloud]
+description = "Update Google Cloud SDK components"
+command = "gcloud components update --quiet"
+detect = "gcloud"
+frequency = "monthly"
+
+[tasks.pnpm]
+description = "Prune pnpm content-addressable store"
+command = "pnpm store prune"
+detect = "pnpm"
+frequency = "monthly"
+
+[tasks.uv]
+description = "Prune uv package cache"
+command = "uv cache prune --force"
+detect = "uv"
+frequency = "monthly"
+
+[tasks.fisher]
+description = "Update Fish shell plugins"
+command = "fisher update"
+detect = "fish"
+shell = "fish --interactive -c"
+
+[tasks.mo_clean]
+description = "Clean system and user caches (sudo)"
+command = "${BREW_PREFIX}/bin/mo clean"
+detect = "${BREW_PREFIX}/bin/mo"
+sudo = true
+
+[tasks.mo_optimize]
+description = "Optimize DNS, Spotlight, fonts, Dock (sudo)"
+command = "${BREW_PREFIX}/bin/mo optimize"
+detect = "${BREW_PREFIX}/bin/mo"
+sudo = true
+
+[tasks.mo_purge]
+description = "Remove old project artifacts"
+command = "${BREW_PREFIX}/bin/mo purge"
+detect = "${BREW_PREFIX}/bin/mo"
+frequency = "monthly"
+
+[tasks.brew_cleanup]
+description = "Remove old versions and cache files"
+command = "brew cleanup --prune=all"
+detect = "brew"
+frequency = "monthly"
+
+[tasks.brew_bundle]
+description = "Remove packages not in Brewfile"
+command = "brew bundle cleanup --force --file=${BREWFILE}"
+detect = "brew"
+require_file = "${BREWFILE}"
+
+[run]
+order = [
+    "brew_update",
+    "brew_upgrade",
+    "gcloud",
+    "pnpm",
+    "uv",
+    "fisher",
+    "mo_clean",
+    "mo_optimize",
+    "mo_purge",
+    "brew_cleanup",
+    "brew_bundle",
+]
