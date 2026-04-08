@@ -2,6 +2,8 @@
 
 ## Development Setup
 
+> **Note:** macOS is required for development and testing.
+
 ```bash
 git clone https://github.com/calvindotsg/mac-upkeep.git
 cd mac-upkeep
@@ -50,3 +52,7 @@ chore: update typer to 0.13
 ci: add macOS runner to test matrix
 test: add test for mo purge failure path
 ```
+
+## Release Process
+
+Automated via [release-please](https://github.com/googleapis/release-please). Use conventional commits — `feat:` and `fix:` trigger version bumps. See CLAUDE.md for full flow.

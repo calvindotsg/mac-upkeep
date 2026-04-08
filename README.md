@@ -2,6 +2,8 @@
 
 Automated macOS maintenance CLI. Runs weekly via `brew services` to keep your dev environment clean.
 
+> **Requires macOS** — uses Homebrew, launchd, and macOS notifications.
+
 ## Install
 
 ```bash
@@ -12,7 +14,7 @@ brew services start mac-upkeep  # Monday 12 PM weekly
 Or via pip/uvx:
 
 ```bash
-pip install mac-upkeep    # from PyPI (when published)
+pip install mac-upkeep
 uvx mac-upkeep run       # one-off without installing
 ```
 

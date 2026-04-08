@@ -97,7 +97,7 @@ Automated via release-please + homebrew-tap dispatch:
 1. Commit changes using conventional commits, push to main
 2. release-please creates a release PR (bumps version in `pyproject.toml`, updates CHANGELOG.md)
 3. Release workflow auto-updates `uv.lock` on the PR branch, test.yml validates via `uv lock --check`
-4. Merge the release PR → GitHub release + tag created → `bump-tap` job dispatches to homebrew-tap automatically
+4. Merge the release PR → GitHub release + tag created → `bump-tap` dispatches to homebrew-tap, `pypi-publish` publishes to PyPI
 5. Verify: check homebrew-tap Actions tab for successful formula update
 
 ## Reusable Patterns
@@ -106,7 +106,7 @@ This repo serves as a reference for Python CLI projects using Typer + UV.
 
 **Copy directly** (adjust versions/paths):
 - `.github/workflows/test.yml` — lint + test CI on macOS
-- `.github/workflows/release.yml` — release-please with GitHub App token + tap dispatch
+- `.github/workflows/release.yml` — release-please with GitHub App token + tap dispatch + PyPI Trusted Publishing (OIDC)
 - `release-please-config.json` + `.release-please-manifest.json` — config and version tracking (both required)
 - `pyproject.toml` structure — Hatchling build, Ruff lint+format, pytest config
 - `CONTRIBUTING.md` — dev setup, commit conventions, PR process
