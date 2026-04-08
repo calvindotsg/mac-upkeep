@@ -9,6 +9,13 @@ brew install calvindotsg/tap/maintenance
 brew services start maintenance  # Monday 12 PM weekly
 ```
 
+Or via pip/uvx:
+
+```bash
+pip install maintenance   # from PyPI (when published)
+uvx maintenance run       # one-off without installing
+```
+
 ## Tasks
 
 Homebrew updates, dev tool cache pruning (gcloud, pnpm, uv), Fish plugin updates, system optimization via [mole](https://github.com/nicehash/mole), and Brewfile enforcement.
@@ -28,6 +35,9 @@ maintenance run --force brew_update   # Run only brew_update
 maintenance run --force all           # Run all, ignoring schedule
 maintenance run --debug               # Verbose output
 maintenance tasks                     # List tasks with status
+maintenance init                      # Generate config (detects your tools)
+maintenance show-config --default     # Show all available task options
+maintenance show-config               # Show your config overrides
 maintenance setup                     # Print sudoers rules
 maintenance status                    # Show brew service status
 maintenance logs                      # View last 20 log lines
@@ -37,30 +47,62 @@ maintenance --version                 # Show version
 
 ## Configuration
 
-Copy the example config:
+Works out of the box with zero configuration. To customize, generate a starter config:
 
 ```bash
-mkdir -p ~/.config/maintenance
-cp "$(brew --prefix)/share/maintenance/config.example.toml" ~/.config/maintenance/config.toml
+maintenance init
 ```
 
-All tasks default to enabled. Disable via config or environment variable:
+This probes your system, detects installed tools, and writes a commented config to `~/.config/maintenance/config.toml`. Only detected tasks are listed. Built-in defaults apply automatically — uncomment lines to override.
+
+To see all available tasks and options:
+
+```bash
+maintenance show-config --default
+```
+
+### Override examples
 
 ```toml
-[tasks]
-gcloud = false       # Skip gcloud updates
-mo_optimize = false  # Skip system optimization
+# ~/.config/maintenance/config.toml
 
-[frequency]
-gcloud = "monthly"   # Override schedule (weekly or monthly)
+# Disable a task
+[tasks.gcloud]
+enabled = false
 
+# Change frequency (weekly or monthly)
+[tasks.brew_update]
+frequency = "monthly"
+
+# Set Brewfile path explicitly
 [paths]
 brewfile = "~/.config/Brewfile"
 ```
 
-```bash
-MAINTENANCE_GCLOUD=false maintenance run  # Env vars override config
+### Custom tasks
+
+Add your own tasks using the same format:
+
+```toml
+[tasks.docker_prune]
+description = "Prune Docker system"
+command = "docker system prune -f"
+detect = "docker"
+frequency = "monthly"
+
+# Control execution order
+[run]
+order = ["brew_update", "brew_upgrade", "docker_prune", "brew_cleanup", "brew_bundle"]
 ```
+
+### Environment variables
+
+```bash
+MAINTENANCE_GCLOUD=false maintenance run              # Disable a task
+MAINTENANCE_GCLOUD_FREQUENCY=monthly maintenance run  # Override frequency
+```
+
+### Sudoers
 
 `mo_clean` and `mo_optimize` require passwordless sudo for the `mo` binary:
 
