@@ -1,0 +1,30 @@
+# mac-upkeep
+
+> Automated macOS maintenance CLI
+
+## What it does
+
+Runs 11 maintenance tasks on a weekly/monthly schedule via brew services:
+Homebrew update/upgrade/cleanup, gcloud/pnpm/uv cache pruning, Fish plugin
+updates, mole system optimization, and Brewfile enforcement.
+
+## Install
+
+- Homebrew: `brew install calvindotsg/tap/mac-upkeep`
+- uv: `uv tool install mac-upkeep`
+- PyPI: https://pypi.org/project/mac-upkeep/
+
+## Key features
+
+- Zero config — auto-detects installed tools, skips missing ones
+- TOML-driven task registry — add tasks without code changes
+- Rich Live TUI for interactive use, plain logging for launchd
+- macOS notifications via terminal-notifier with osascript fallback
+- Per-task frequency scheduling (weekly/monthly) with schedule drift buffers
+- Custom tasks in user config.toml
+
+## Links
+
+- Source: https://github.com/calvindotsg/mac-upkeep
+- PyPI: https://pypi.org/project/mac-upkeep/
+- Changelog: https://github.com/calvindotsg/mac-upkeep/blob/main/CHANGELOG.md

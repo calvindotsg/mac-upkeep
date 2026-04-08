@@ -7,7 +7,7 @@ license = "MIT"
 requires-python = ">=3.11"
 dependencies = ["typer>=0.12"]
 authors = [{name = "Calvin", url = "https://github.com/calvindotsg"}]
-keywords = ["macos", "maintenance", "homebrew", "cli", "automation"]
+keywords = ["macos", "maintenance", "homebrew", "cli", "automation", "system-administration", "developer-tools", "cache-management"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -27,6 +27,7 @@ Homepage = "https://github.com/calvindotsg/mac-upkeep"
 Repository = "https://github.com/calvindotsg/mac-upkeep"
 Issues = "https://github.com/calvindotsg/mac-upkeep/issues"
 Changelog = "https://github.com/calvindotsg/mac-upkeep/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/calvindotsg/mac-upkeep#readme"
 
 [project.scripts]
 mac-upkeep = "mac_upkeep.cli:app"

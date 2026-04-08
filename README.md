@@ -1,8 +1,14 @@
 # mac-upkeep
 
-Automated macOS maintenance CLI. Runs weekly via `brew services` to keep your dev environment clean.
+[![PyPI](https://img.shields.io/pypi/v/mac-upkeep)](https://pypi.org/project/mac-upkeep/)
+[![CI](https://img.shields.io/github/actions/workflow/status/calvindotsg/mac-upkeep/test.yml?branch=main)](https://github.com/calvindotsg/mac-upkeep/actions)
+[![Python](https://img.shields.io/pypi/pyversions/mac-upkeep)](https://pypi.org/project/mac-upkeep/)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![macOS](https://img.shields.io/badge/platform-macOS-lightgrey?logo=apple&logoColor=black)](https://github.com/calvindotsg/mac-upkeep)
 
-> **Requires macOS** — uses Homebrew, launchd, and macOS notifications.
+Automated macOS maintenance CLI. Runs Homebrew updates, dev tool cache cleanup (gcloud, pnpm, uv), Fish plugin updates, system optimization, and Brewfile enforcement on a weekly schedule via `brew services` — zero config required.
+
+![mac-upkeep demo](demo.gif)
 
 ## Install
 
@@ -11,22 +17,34 @@ brew install calvindotsg/tap/mac-upkeep
 brew services start mac-upkeep  # Monday 12 PM weekly
 ```
 
-Or via pip/uvx:
+Or via [uv](https://docs.astral.sh/uv/):
 
 ```bash
-pip install mac-upkeep
-uvx mac-upkeep run       # one-off without installing
+uv tool install mac-upkeep   # persistent install
+uvx mac-upkeep run            # one-off without installing
 ```
 
 ## Tasks
 
-Homebrew updates, dev tool cache pruning (gcloud, pnpm, uv), Fish plugin updates, system optimization via [mole](https://github.com/nicehash/mole), and Brewfile enforcement.
+| Task | Description | Schedule |
+|------|-------------|----------|
+| `brew_update` | Update Homebrew package database | Weekly |
+| `brew_upgrade` | Upgrade outdated formulae and casks | Weekly |
+| `gcloud` | Update Google Cloud SDK components | Monthly |
+| `pnpm` | Prune pnpm content-addressable store | Monthly |
+| `uv` | Prune uv package cache | Monthly |
+| `fisher` | Update Fish shell plugins | Weekly |
+| `mo_clean` | Clean system and user caches ([mole](https://github.com/nicehash/mole)) | Weekly |
+| `mo_optimize` | Optimize DNS, Spotlight, fonts, Dock ([mole](https://github.com/nicehash/mole)) | Weekly |
+| `mo_purge` | Remove old project artifacts ([mole](https://github.com/nicehash/mole)) | Monthly |
+| `brew_cleanup` | Remove old versions and cache files | Monthly |
+| `brew_bundle` | Remove packages not in Brewfile | Weekly |
+
+Tasks auto-detect installed tools — missing tools are skipped. Use `--force <task>` to run a specific task on demand.
 
 ```bash
 mac-upkeep tasks  # See all tasks with frequency and last-run status
 ```
-
-Tasks auto-detect installed tools — missing tools are skipped. Each task runs on a weekly or monthly schedule. Use `--force <task>` to run a specific task on demand.
 
 ## Usage
 
@@ -112,6 +130,10 @@ MAC_UPKEEP_GCLOUD_FREQUENCY=monthly mac-upkeep run  # Override frequency
 mac-upkeep setup | sudo tee /etc/sudoers.d/mac-upkeep && sudo chmod 0440 /etc/sudoers.d/mac-upkeep
 sudo visudo -c
 ```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and conventions.
 
 ## License
 
