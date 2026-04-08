@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.0.0](https://github.com/calvindotsg/maintenance/compare/v1.2.1...v2.0.0) (2026-04-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* Package renamed from maintenance to mac-upkeep.
+
+### Features
+
+* rename package to mac-upkeep ([#15](https://github.com/calvindotsg/maintenance/issues/15)) ([aef9e86](https://github.com/calvindotsg/maintenance/commit/aef9e8604f3c3a95286f06274e7737d81ec1dc5a))
+* TOML-driven task registry + init/show-config commands ([#12](https://github.com/calvindotsg/maintenance/issues/12)) ([23a7f0b](https://github.com/calvindotsg/maintenance/commit/23a7f0b53931eae733a8a7bf9cf141e5c0460797))
+
+
+### Documentation
+
+* update README and CLAUDE.md for TOML-driven architecture ([#14](https://github.com/calvindotsg/maintenance/issues/14)) ([2ce0583](https://github.com/calvindotsg/maintenance/commit/2ce058350b5d0665113ec3064d299ce777709a30))
+
+
+### CI/CD
+
+* keep uv.lock in sync with release-please version bumps ([#10](https://github.com/calvindotsg/maintenance/issues/10)) ([d6a81a9](https://github.com/calvindotsg/maintenance/commit/d6a81a9c72cb3a764708d74e505b0f5a86a14697))
+
 ## [1.2.1](https://github.com/calvindotsg/maintenance/compare/v1.2.0...v1.2.1) (2026-04-07)
 
 
