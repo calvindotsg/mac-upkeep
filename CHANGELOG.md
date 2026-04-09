@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.1.1](https://github.com/calvindotsg/mac-upkeep/compare/v2.1.0...v2.1.1) (2026-04-08)
+
+
+### Documentation
+
+* rewrite README and CLAUDE.md for public audience ([#21](https://github.com/calvindotsg/mac-upkeep/issues/21)) ([710712d](https://github.com/calvindotsg/mac-upkeep/commit/710712d317b560d6039fca6aeaa33dae5f5f4e50))
+
+
+### Miscellaneous
+
+* update repository URLs after GitHub rename ([#19](https://github.com/calvindotsg/mac-upkeep/issues/19)) ([ec97db4](https://github.com/calvindotsg/mac-upkeep/commit/ec97db45be8b9797f400ff45a329959a388efeab))
+
 ## [2.1.0](https://github.com/calvindotsg/maintenance/compare/v2.0.0...v2.1.0) (2026-04-08)
 
 
