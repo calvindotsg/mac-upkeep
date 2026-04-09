@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.2.0](https://github.com/calvindotsg/mac-upkeep/compare/v2.1.2...v2.2.0) (2026-04-09)
+
+
+### Features
+
+* suppress notification when all tasks skipped on boot ([62809e6](https://github.com/calvindotsg/mac-upkeep/commit/62809e6d8f1b687ec867691cdda1e86f81cd8dbd))
+* suppress notification when all tasks skipped on boot ([8ae588c](https://github.com/calvindotsg/mac-upkeep/commit/8ae588cf9db5b4d3d117ba7a6fcc3f84104551c2))
+
+
+### Bug Fixes
+
+* update record.sh paths after demo.gif relocation ([#25](https://github.com/calvindotsg/mac-upkeep/issues/25)) ([ed59912](https://github.com/calvindotsg/mac-upkeep/commit/ed599128457e4aed64a7a2aa932c4a893d68d07c))
+
+
+### Documentation
+
+* align README, llms.txt, and reusable-patterns with RunAtLoad ([4e26c42](https://github.com/calvindotsg/mac-upkeep/commit/4e26c42e1aa02a2004d9fa76c9282f2563206f11))
+* update scheduling docs for RunAtLoad ([eae69eb](https://github.com/calvindotsg/mac-upkeep/commit/eae69eb96bfef82b6fb5ae6675590c965fa5f971))
+
+
+### CI/CD
+
+* derive release bot identity dynamically from app-slug ([#27](https://github.com/calvindotsg/mac-upkeep/issues/27)) ([afc085a](https://github.com/calvindotsg/mac-upkeep/commit/afc085ae660b45373ca9b68047abd7612bdd4ec2))
+
 ## [2.1.2](https://github.com/calvindotsg/mac-upkeep/compare/v2.1.1...v2.1.2) (2026-04-09)
 
 
