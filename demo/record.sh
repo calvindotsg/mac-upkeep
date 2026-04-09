@@ -9,8 +9,10 @@
 #   ./demo/record.sh convert  # re-convert existing demo.cast
 set -euo pipefail
 
-CAST="demo.cast"
-GIF="demo.gif"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+CAST="$REPO_ROOT/demo.cast"
+GIF="$SCRIPT_DIR/demo.gif"
 
 # Ayu Dark theme: bg, fg, ANSI 0-7, bright 8-15
 AYU_DARK="0A0E14,B3B1AD,01060E,EA6C73,91B362,F9AF4F,53BDFA,FAE994,90E1C6,C7C7C7,686868,F07178,C2D94C,FFB454,59C2FF,FFEE99,95E6CB,FFFFFF"
