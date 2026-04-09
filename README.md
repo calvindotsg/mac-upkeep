@@ -8,7 +8,7 @@
 
 Automated macOS maintenance CLI. Runs Homebrew updates, dev tool cache cleanup (gcloud, pnpm, uv), Fish plugin updates, system optimization, and Brewfile enforcement on a weekly schedule via `brew services` — zero config required.
 
-![mac-upkeep demo](https://raw.githubusercontent.com/calvindotsg/mac-upkeep/main/demo.gif)
+![mac-upkeep demo](https://raw.githubusercontent.com/calvindotsg/mac-upkeep/main/demo/demo.gif)
 
 ## Install
 
