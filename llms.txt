@@ -4,7 +4,7 @@
 
 ## What it does
 
-Runs 11 maintenance tasks on a weekly/monthly schedule via brew services:
+Runs 11 maintenance tasks on boot + weekly/monthly schedule via brew services:
 Homebrew update/upgrade/cleanup, gcloud/pnpm/uv cache pruning, Fish plugin
 updates, mole system optimization, and Brewfile enforcement.
 
