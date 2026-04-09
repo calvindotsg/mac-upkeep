@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.3](https://github.com/calvindotsg/mac-upkeep/compare/v2.1.2...v2.1.3) (2026-04-09)
+
+
+### Bug Fixes
+
+* update record.sh paths after demo.gif relocation ([#25](https://github.com/calvindotsg/mac-upkeep/issues/25)) ([ed59912](https://github.com/calvindotsg/mac-upkeep/commit/ed599128457e4aed64a7a2aa932c4a893d68d07c))
+
 ## [2.1.2](https://github.com/calvindotsg/mac-upkeep/compare/v2.1.1...v2.1.2) (2026-04-09)
 
 
