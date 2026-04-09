@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.1](https://github.com/calvindotsg/mac-upkeep/compare/v2.2.0...v2.2.1) (2026-04-09)
+
+
+### Miscellaneous
+
+* improve PyPI metadata and CI coverage ([#30](https://github.com/calvindotsg/mac-upkeep/issues/30)) ([7428b61](https://github.com/calvindotsg/mac-upkeep/commit/7428b610d1523d0e4b22e397185ad68e01240940))
+
 ## [2.2.0](https://github.com/calvindotsg/mac-upkeep/compare/v2.1.2...v2.2.0) (2026-04-09)
 
 
