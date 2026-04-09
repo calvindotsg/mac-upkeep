@@ -62,14 +62,14 @@ Do not add conditions to the filter or remove the `force_tasks is None` guard fr
 ### Frequency scheduling
 
 - Thresholds are 6 days for weekly and 27 days for monthly (not 7/30 — buffer for launchd schedule drift after sleep/reboot). State tracked in `~/.local/state/mac-upkeep/last-run.json`.
-- **Safety net**: prevents redundant runs from launchd coalescing, manual `mac-upkeep run`, or formula regressions re-enabling RunAtLoad. Do not remove even with `run_at_load false`. Homebrew defaults `run_at_load` to `true` ([service.rb:55](https://github.com/Homebrew/brew/blob/main/Library/Homebrew/service.rb)) — undocumented in Formula Cookbook.
+- **Safety net**: prevents redundant runs from RunAtLoad boot triggers, launchd coalescing, and manual `mac-upkeep run`. `run_at_load true` is intentional — `StartCalendarInterval` does NOT coalesce from power-off (only sleep), so RunAtLoad is essential for laptops that reboot frequently.
 - Timestamps only update on successful non-dry-run execution. Corrupt/missing state file silently triggers re-run.
 
 ### Output and notifications
 
 - **Interactive detection**: `sys.stdout.isatty()` switches between Rich Live table and Python logging. Same code path, different presentation.
 - **Rich Live TUI state separation**: `_TaskState` holds status/reason/duration; `_generate_table()` renders. Debug output scrolls ABOVE the pinned table via `self._live.console.print()` — never put debug content into `_TaskState`.
-- **Notifications always fire**: `notify()` is called regardless of `output.interactive`. The headless + notification + click-to-act pattern means notifications are the user's feedback channel for scheduled runs.
+- **Notifications fire on activity**: `notify()` is called when at least one task ran or failed, regardless of `output.interactive`. Suppressed when all tasks skip (e.g., RunAtLoad boot with recent timestamps). The headless + notification + click-to-act pattern means notifications are the user's feedback channel for scheduled runs.
 - **terminal-notifier preferred**: `shutil.which("terminal-notifier")` tries the richer tool first. Fallback to osascript loses `-group` (dedup), `-activate` (focus terminal), `-open` (click action).
 - **Bundle ID detection chain**: `CMUX_BUNDLE_ID` env var → Ghostty.app plist via `defaults read` → `com.apple.Terminal` fallback.
 - **Rich is a transitive dependency**: `typer>=0.12` requires `rich>=12.3.0`. Using Rich adds zero new runtime dependencies.

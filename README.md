@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![macOS](https://img.shields.io/badge/platform-macOS-lightgrey?logo=apple&logoColor=black)](https://github.com/calvindotsg/mac-upkeep)
 
-Automated macOS maintenance CLI. Runs Homebrew updates, dev tool cache cleanup (gcloud, pnpm, uv), Fish plugin updates, system optimization, and Brewfile enforcement on a weekly schedule via `brew services` — zero config required.
+Automated macOS maintenance CLI. Runs Homebrew updates, dev tool cache cleanup (gcloud, pnpm, uv), Fish plugin updates, system optimization, and Brewfile enforcement on boot + weekly via `brew services` — zero config required.
 
 ![mac-upkeep demo](https://raw.githubusercontent.com/calvindotsg/mac-upkeep/main/demo/demo.gif)
 
@@ -14,7 +14,7 @@ Automated macOS maintenance CLI. Runs Homebrew updates, dev tool cache cleanup (
 
 ```bash
 brew install calvindotsg/tap/mac-upkeep
-brew services start mac-upkeep  # Monday 12 PM weekly
+brew services start mac-upkeep  # runs on boot + Monday 12 PM
 ```
 
 Or via [uv](https://docs.astral.sh/uv/):
