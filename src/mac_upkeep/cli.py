@@ -154,7 +154,8 @@ def run(
     results = run_all_tasks(config=config, output=output, dry_run=dry_run, force_tasks=force_set)
     output.summary(results)
 
-    if config.notify and not dry_run:
+    has_activity = any(r.status in ("ok", "failed") for r in results)
+    if config.notify and not dry_run and has_activity:
         title, message, subtitle = format_summary(results)
         brew_prefix = get_brew_prefix()
         log_url = f"file://{brew_prefix}/var/log/mac-upkeep.log"

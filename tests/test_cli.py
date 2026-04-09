@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+import json
+from datetime import datetime, timedelta
+from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
@@ -172,3 +174,50 @@ def test_show_config_user_config(tmp_path):
     assert result.exit_code == 0
     assert "[tasks.gcloud]" in result.output
     assert "enabled = false" in result.output
+
+
+# --- notification suppression ---
+
+
+def test_run_no_notification_when_all_skipped(tmp_path, monkeypatch):
+    """Boot scenario: all tasks skip (ran recently) → no notification."""
+    state_file = tmp_path / "last-run.json"
+    recent = (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds")
+    state = {
+        name: recent
+        for name in [
+            "brew_update",
+            "brew_upgrade",
+            "gcloud",
+            "pnpm",
+            "uv",
+            "fisher",
+            "mo_clean",
+            "mo_optimize",
+            "mo_purge",
+            "brew_cleanup",
+            "brew_bundle",
+        ]
+    }
+    state_file.write_text(json.dumps(state))
+    monkeypatch.setattr("mac_upkeep.tasks._STATE_FILE", state_file)
+    with patch("mac_upkeep.cli.notify") as mock_notify:
+        result = runner.invoke(app, ["run"])
+    assert result.exit_code == 0
+    mock_notify.assert_not_called()
+
+
+def test_run_sends_notification_on_activity(tmp_path, monkeypatch):
+    """Scheduled run: at least one task ran → notification sent."""
+    state_file = tmp_path / "last-run.json"
+    monkeypatch.setattr("mac_upkeep.tasks._STATE_FILE", state_file)
+    monkeypatch.setattr("mac_upkeep.tasks._STATE_DIR", tmp_path)
+    with (
+        patch("mac_upkeep.cli.notify") as mock_notify,
+        patch("mac_upkeep.tasks.shutil.which", return_value="/usr/bin/echo"),
+        patch("mac_upkeep.tasks.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        result = runner.invoke(app, ["run", "--force", "brew_update"])
+    assert result.exit_code == 0
+    mock_notify.assert_called_once()
