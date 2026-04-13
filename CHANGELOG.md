@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.3.0](https://github.com/calvindotsg/mac-upkeep/compare/v2.2.1...v2.3.0) (2026-04-13)
+
+
+### Features
+
+* add next scheduled run visibility to tasks and run ([6317ce1](https://github.com/calvindotsg/mac-upkeep/commit/6317ce18c041a8f29a8e8534a061bfd3aec24343))
+* add next scheduled run visibility to tasks and run ([34dbe93](https://github.com/calvindotsg/mac-upkeep/commit/34dbe93fab3781d7ce669c852b6c06eb0ab8d5ca))
+* redesign status command as scheduling dashboard ([#34](https://github.com/calvindotsg/mac-upkeep/issues/34)) ([86ca27c](https://github.com/calvindotsg/mac-upkeep/commit/86ca27cb7f7b1fd8878996552246061ebdd6d598))
+
 ## [2.2.1](https://github.com/calvindotsg/mac-upkeep/compare/v2.2.0...v2.2.1) (2026-04-09)
 
 

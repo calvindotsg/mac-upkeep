@@ -1,6 +1,6 @@
 [project]
 name = "mac-upkeep"
-version = "2.2.1"
+version = "2.3.0"
 description = "Automated macOS maintenance CLI"
 readme = "README.md"
 license = "MIT"
