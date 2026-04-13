@@ -59,7 +59,7 @@ mac-upkeep init                      # Generate config (detects your tools)
 mac-upkeep show-config --default     # Show all available task options
 mac-upkeep show-config               # Show your config overrides
 mac-upkeep setup                     # Print sudoers rules
-mac-upkeep status                    # Show brew service status
+mac-upkeep status                    # Show scheduling dashboard
 mac-upkeep logs                      # View last 20 log lines
 mac-upkeep logs -f                   # Follow logs
 mac-upkeep --version                 # Show version

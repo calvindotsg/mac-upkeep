@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import getpass
 import importlib.resources
+import json
 import logging
 import os
 import shutil
@@ -414,19 +415,159 @@ def setup() -> None:
     typer.echo("#   | sudo tee /etc/newsyslog.d/mac-upkeep.conf")
 
 
-@app.command()
-def status() -> None:
-    """Show brew service status for mac-upkeep."""
+def _get_service_info() -> dict | None:
+    """Query brew services info as JSON. Returns None on failure."""
     try:
         result = subprocess.run(
-            ["brew", "services", "info", "mac-upkeep"],
+            ["brew", "services", "info", "mac-upkeep", "--json"],
             capture_output=True,
             text=True,
         )
-        typer.echo(result.stdout.strip())
-    except FileNotFoundError:
-        typer.echo("brew not found. Install Homebrew first.")
-        raise typer.Exit(1)
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout)
+        return data[0] if data else None
+    except (FileNotFoundError, json.JSONDecodeError, IndexError, OSError):
+        return None
+
+
+_WEEKDAY_NAMES = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+]
+
+
+def _format_cron_schedule(cron: dict, loaded: bool) -> str:
+    """Convert launchd cron dict + loaded flag to schedule string."""
+    wd = cron.get("Weekday")
+    hour = cron.get("Hour", 0)
+    minute = cron.get("Minute", 0)
+    day_name = _WEEKDAY_NAMES[wd] if wd is not None and 0 <= wd <= 6 else "?"
+    period = "AM" if hour < 12 else "PM"
+    h12 = hour % 12 or 12
+    schedule = f"Every {day_name} at {h12}:{minute:02d} {period}"
+    if loaded:
+        schedule += " + on boot"
+    return schedule
+
+
+def _next_trigger_date(cron: dict) -> str:
+    """Compute next launchd trigger date from cron weekday. Returns 'Mon Apr 14' style."""
+    from datetime import date, timedelta
+
+    launchd_wd = cron.get("Weekday")
+    if launchd_wd is None:
+        return "—"
+    # launchd: 0=Sunday, 1=Monday, ..., 6=Saturday
+    # Python weekday: 0=Monday, ..., 6=Sunday → py_wd = (launchd_wd - 1) % 7
+    py_wd = (launchd_wd - 1) % 7
+    today = date.today()
+    days_ahead = (py_wd - today.weekday()) % 7
+    next_date = today + timedelta(days=days_ahead)
+    return next_date.strftime("%a %b %-d")
+
+
+@app.command()
+def status() -> None:
+    """Show scheduling dashboard: service state, schedule, and tasks due."""
+    try:
+        v = pkg_version("mac-upkeep")
+    except Exception:
+        v = "unknown"
+
+    config = Config.load()
+    state = _load_state()
+    svc = _get_service_info()
+
+    task_list = [
+        (name, config.task_defs[name]) for name in config.run_order if name in config.task_defs
+    ]
+    total = len(task_list)
+    ready_count = disabled_count = not_found_count = 0
+    overdue: list = []
+    due_soon: list = []
+
+    for name, td in task_list:
+        if not td.enabled:
+            disabled_count += 1
+            continue
+        if shutil.which(td.detect) is None:
+            not_found_count += 1
+            continue
+        ready_count += 1
+        next_str = format_next_run(name, config, state)
+        last_str = format_last_run(state.get(name))
+        if next_str == "now":
+            overdue.append((name, td, last_str, next_str))
+        elif next_str in ("in 1 day", "in 2 days"):
+            due_soon.append((name, td, last_str, next_str))
+
+    tasks_needing_attention = overdue + due_soon
+
+    summary_parts = [f"{total} tasks", f"{ready_count} ready"]
+    if disabled_count:
+        summary_parts.append(f"{disabled_count} disabled")
+    if not_found_count:
+        summary_parts.append(f"{not_found_count} not found")
+    if overdue:
+        summary_parts.append(f"{len(overdue)} overdue")
+    summary_line = ", ".join(summary_parts)
+
+    if sys.stdout.isatty():
+        from rich.console import Console
+
+        console = Console(highlight=False)
+        console.print(f"[bold]mac-upkeep v{v}[/bold]")
+        console.print()
+        if svc:
+            svc_status = svc.get("status", "unknown")
+            exit_code = svc.get("exit_code", "?")
+            cron = svc.get("cron")
+            loaded = svc.get("loaded", False)
+            exit_str = f"{exit_code} (success)" if exit_code == 0 else str(exit_code)
+            console.print(f"  [dim]Service  [/dim]  {svc_status}")
+            if cron:
+                console.print(f"  [dim]Schedule [/dim]  {_format_cron_schedule(cron, loaded)}")
+            console.print(f"  [dim]Last exit[/dim]  {exit_str}")
+            console.print()
+        if tasks_needing_attention:
+            console.print("  [bold]Tasks due:[/bold]")
+            for name, td, last_str, next_str in tasks_needing_attention:
+                if next_str == "now":
+                    next_display = "[red]⚠ overdue[/red]"
+                else:
+                    next_display = f"[yellow]{next_str}[/yellow]"
+                console.print(
+                    f"    {name:<18} {td.frequency:<8} last: {last_str:<16} {next_display}"
+                )
+            console.print()
+            console.print(f"  {summary_line}")
+        else:
+            cron = svc.get("cron") if svc else None
+            if cron:
+                next_trigger = _next_trigger_date(cron)
+                console.print(
+                    f"  [green]{summary_line} up to date[/green], next run {next_trigger}"
+                )
+            else:
+                console.print(f"  [green]{summary_line} up to date[/green]")
+    else:
+        header_parts = [f"mac-upkeep v{v}"]
+        if svc:
+            header_parts.append(svc.get("status", "unknown"))
+            exit_code = svc.get("exit_code", "?")
+            header_parts.append(f"exit: {exit_code}")
+            cron = svc.get("cron")
+            if cron:
+                next_trigger = _next_trigger_date(cron)
+                header_parts.append(f"next: {next_trigger}")
+        typer.echo(" | ".join(header_parts))
+        typer.echo(summary_line)
 
 
 @app.command()

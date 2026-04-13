@@ -220,6 +220,51 @@ def test_run_no_notification_when_all_skipped(tmp_path, monkeypatch):
     mock_notify.assert_not_called()
 
 
+# --- status command ---
+
+_MOCK_SVC_INFO = {
+    "name": "mac-upkeep",
+    "running": False,
+    "loaded": True,
+    "exit_code": 0,
+    "status": "scheduled",
+    "cron": {"Month": "*", "Day": "*", "Weekday": 1, "Hour": 12, "Minute": 0},
+}
+
+
+def test_status_shows_service_info():
+    """Status shows service state when brew services is available."""
+    with patch("mac_upkeep.cli._get_service_info", return_value=_MOCK_SVC_INFO):
+        result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0
+    assert "mac-upkeep v" in result.output
+    assert "scheduled" in result.output
+    assert "exit: 0" in result.output
+    assert "tasks" in result.output
+
+
+def test_status_graceful_degradation():
+    """Status shows task summary even when brew services is unavailable."""
+    with patch("mac_upkeep.cli._get_service_info", return_value=None):
+        result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0
+    assert "mac-upkeep v" in result.output
+    assert "tasks" in result.output
+
+
+def test_status_overdue_tasks(tmp_path, monkeypatch):
+    """Tasks that have never run appear as overdue in summary."""
+    state_file = tmp_path / "last-run.json"
+    state_file.write_text("{}")  # empty state — all tasks eligible
+    monkeypatch.setattr("mac_upkeep.tasks._STATE_FILE", state_file)
+
+    with patch("mac_upkeep.cli._get_service_info", return_value=None):
+        result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
+    assert "overdue" in result.output
+
+
 def test_run_sends_notification_on_activity(tmp_path, monkeypatch):
     """Scheduled run: at least one task ran → notification sent."""
     state_file = tmp_path / "last-run.json"

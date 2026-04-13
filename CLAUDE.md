@@ -24,7 +24,7 @@ config.py     → TaskDef dataclass, load_task_defs(), resolve_variables(), get_
                 Config.load() (3-layer merge: defaults.toml → user config → env vars)
 tasks.py      → _build_cmd(), run_task(), _run(), run_all_tasks() data-driven loop,
                 frequency scheduling, format_last_run(), format_next_run(), ANSI stripping
-cli.py        → Typer app: run, tasks, init, show-config, setup, status, logs, notify-test
+cli.py        → Typer app: run, tasks, init, show-config, setup, status (dashboard), logs, notify-test
 output.py     → TaskResult dataclass, Rich Live table TUI (interactive), Python logging (non-interactive)
 notify.py     → macOS notifications via terminal-notifier (preferred) / osascript (fallback)
 ```
@@ -75,6 +75,7 @@ Do not add conditions to the filter or remove the `force_tasks is None` guard fr
 - **terminal-notifier preferred**: `shutil.which("terminal-notifier")` tries the richer tool first. Fallback to osascript loses `-group` (dedup), `-activate` (focus terminal), `-open` (click action).
 - **Bundle ID detection chain**: `CMUX_BUNDLE_ID` env var → Ghostty.app plist via `defaults read` → `com.apple.Terminal` fallback.
 - **Rich is a transitive dependency**: `typer>=0.12` requires `rich>=12.3.0`. Using Rich adds zero new runtime dependencies.
+- **`status` dashboard graceful degradation**: if `_get_service_info()` returns None (brew not installed, service not registered, or JSON parse failure), the service header is skipped and only the task scheduling summary is shown. Reuses `format_last_run()` and `format_next_run()` from tasks.py. Test by patching `mac_upkeep.cli._get_service_info` directly rather than mocking subprocess.run (avoids interfering with Config.load() → get_brew_prefix() subprocess call).
 
 ### sudo + HOME
 
