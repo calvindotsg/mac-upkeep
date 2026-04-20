@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from unittest.mock import MagicMock
 
@@ -180,7 +181,8 @@ def test_aggregate_mixed(tmp_path, monkeypatch):
     def fake_run(args, **kwargs):
         path = args[2]
         op = args[3] if len(args) > 3 else ""
-        if "r0" in path or "r1" in path:
+        basename = os.path.basename(path)
+        if basename in ("r0", "r1"):
             # not a repo
             if op == "rev-parse" and args[4] == "--is-inside-work-tree":
                 return _cp(returncode=128)
