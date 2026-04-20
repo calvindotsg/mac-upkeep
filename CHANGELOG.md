@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.0](https://github.com/calvindotsg/mac-upkeep/compare/v2.3.0...v2.4.0) (2026-04-20)
+
+
+### Features
+
+* add git_sync task with daily frequency and handler dispatch ([#35](https://github.com/calvindotsg/mac-upkeep/issues/35)) ([5f4628f](https://github.com/calvindotsg/mac-upkeep/commit/5f4628f5eaae9ddc6941fff72c2eb4cd841390ee))
+
 ## [2.3.0](https://github.com/calvindotsg/mac-upkeep/compare/v2.2.1...v2.3.0) (2026-04-13)
 
 
