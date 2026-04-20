@@ -195,7 +195,7 @@ def test_show_config_user_config(tmp_path):
 def test_run_no_notification_when_all_skipped(tmp_path, monkeypatch):
     """Boot scenario: all tasks skip (ran recently) → no notification."""
     state_file = tmp_path / "last-run.json"
-    recent = (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds")
+    recent = (datetime.now() - timedelta(hours=1)).isoformat(timespec="seconds")
     state = {
         name: recent
         for name in [
@@ -210,6 +210,7 @@ def test_run_no_notification_when_all_skipped(tmp_path, monkeypatch):
             "mo_purge",
             "brew_cleanup",
             "brew_bundle",
+            "git_sync",
         ]
     }
     state_file.write_text(json.dumps(state))

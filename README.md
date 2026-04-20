@@ -39,6 +39,7 @@ uvx mac-upkeep run            # one-off without installing
 | `mo_purge` | Remove old project artifacts ([mole](https://github.com/nicehash/mole)) | Monthly |
 | `brew_cleanup` | Remove old versions and cache files | Monthly |
 | `brew_bundle` | Remove packages not in Brewfile | Weekly |
+| `git_sync` | Pull configured git repositories | Daily |
 
 Tasks auto-detect installed tools — missing tools are skipped. Use `--force <task>` to run a specific task on demand.
 
@@ -90,7 +91,7 @@ mac-upkeep show-config --default
 [tasks.gcloud]
 enabled = false
 
-# Change frequency (weekly or monthly)
+# Change frequency (daily, weekly, or monthly)
 [tasks.brew_update]
 frequency = "monthly"
 
@@ -114,6 +115,21 @@ frequency = "monthly"
 [run]
 order = ["brew_update", "brew_upgrade", "docker_prune", "brew_cleanup", "brew_bundle"]
 ```
+
+### git_sync
+
+Pull configured git repositories daily with `git pull --ff-only`. Opt-in — list your repos explicitly:
+
+```toml
+[git_sync]
+repos = [
+    "~/code/my-project",
+    "~/work/max-*",       # glob patterns supported
+]
+skip_dirty = true         # skip repos with uncommitted changes
+```
+
+Each repo is skipped with a reason if it's not a git repo, has no remote, has no upstream branch, or (when `skip_dirty = true`) has uncommitted changes. SSH auth under launchd requires a path-based `IdentityAgent` entry in `~/.ssh/config` (e.g. 1Password's agent socket) — `SSH_AUTH_SOCK` env vars are not inherited by LaunchAgents.
 
 ### Environment variables
 

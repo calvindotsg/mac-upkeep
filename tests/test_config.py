@@ -34,7 +34,7 @@ def test_task_def_defaults():
 def test_load_defaults_returns_all_tasks():
     data = _load_defaults()
     assert "tasks" in data
-    assert len(data["tasks"]) == 11
+    assert len(data["tasks"]) == 12
     assert "brew_update" in data["tasks"]
     assert "brew_bundle" in data["tasks"]
 
@@ -44,8 +44,8 @@ def test_load_defaults_has_run_order():
     assert "run" in data
     order = data["run"]["order"]
     assert order[0] == "brew_update"
-    assert order[-1] == "brew_bundle"
-    assert len(order) == 11
+    assert order[-1] == "git_sync"
+    assert len(order) == 12
 
 
 # --- load_default_task_names ---
@@ -53,10 +53,10 @@ def test_load_defaults_has_run_order():
 
 def test_load_default_task_names():
     tasks, order = load_default_task_names()
-    assert len(tasks) == 11
+    assert len(tasks) == 12
     assert tasks["brew_update"] == "Update Homebrew package database"
     assert order[0] == "brew_update"
-    assert order[-1] == "brew_bundle"
+    assert order[-1] == "git_sync"
 
 
 # --- resolve_variables ---
@@ -93,7 +93,7 @@ def test_resolve_variables_no_vars():
 def test_load_task_defs_defaults_only():
     variables = {"BREW_PREFIX": "/opt/homebrew", "BREWFILE": "", "HOME": "/users/me"}
     task_defs, run_order = load_task_defs(None, variables)
-    assert len(task_defs) == 11
+    assert len(task_defs) == 12
     assert "brew_update" in task_defs
     assert task_defs["brew_update"].command == "brew update"
     assert task_defs["brew_update"].detect == "brew"
@@ -103,7 +103,7 @@ def test_load_task_defs_defaults_only():
     assert task_defs["mo_clean"].command == "/opt/homebrew/bin/mo clean"
     assert task_defs["fisher"].shell == "fish --interactive -c"
     assert run_order[0] == "brew_update"
-    assert run_order[-1] == "brew_bundle"
+    assert run_order[-1] == "git_sync"
 
 
 def test_load_task_defs_user_override():
@@ -228,8 +228,63 @@ def test_validation_empty_command():
             }
         }
     }
-    with pytest.raises(ValueError, match="has no command"):
+    with pytest.raises(ValueError, match="has no command or handler"):
         load_task_defs(user_data, variables)
+
+
+def test_validation_command_and_handler_conflict(monkeypatch):
+    import pytest
+
+    monkeypatch.setattr("mac_upkeep.tasks.KNOWN_HANDLERS", {"stub", "git_sync"})
+    variables = {"BREW_PREFIX": "/opt/homebrew", "BREWFILE": "", "HOME": "/users/me"}
+    user_data = {
+        "tasks": {
+            "conflict": {
+                "description": "both set",
+                "command": "echo hi",
+                "handler": "stub",
+            }
+        }
+    }
+    with pytest.raises(ValueError, match="cannot set both 'command' and 'handler'"):
+        load_task_defs(user_data, variables)
+
+
+def test_validation_unknown_handler(monkeypatch):
+    import pytest
+
+    # Keep git_sync registered so default task validates; only "nope" is unknown
+    monkeypatch.setattr("mac_upkeep.tasks.KNOWN_HANDLERS", {"git_sync"})
+    variables = {"BREW_PREFIX": "/opt/homebrew", "BREWFILE": "", "HOME": "/users/me"}
+    user_data = {
+        "tasks": {
+            "mystery": {
+                "description": "unknown handler",
+                "command": "",
+                "handler": "nope",
+            }
+        }
+    }
+    with pytest.raises(ValueError, match="unknown handler 'nope'"):
+        load_task_defs(user_data, variables)
+
+
+def test_validation_accepts_handler_with_empty_command(monkeypatch):
+    monkeypatch.setattr("mac_upkeep.tasks.KNOWN_HANDLERS", {"stub", "git_sync"})
+    variables = {"BREW_PREFIX": "/opt/homebrew", "BREWFILE": "", "HOME": "/users/me"}
+    user_data = {
+        "tasks": {
+            "handler_task": {
+                "description": "handler-driven",
+                "command": "",
+                "handler": "stub",
+                "detect": "git",
+            }
+        }
+    }
+    task_defs, _ = load_task_defs(user_data, variables)
+    assert task_defs["handler_task"].handler == "stub"
+    assert task_defs["handler_task"].command == ""
 
 
 def test_validation_invalid_frequency():
@@ -241,12 +296,27 @@ def test_validation_invalid_frequency():
             "bad_freq": {
                 "description": "Bad frequency",
                 "command": "echo hello",
+                "frequency": "yearly",
+            }
+        }
+    }
+    with pytest.raises(ValueError, match="must be 'daily', 'weekly', or 'monthly'"):
+        load_task_defs(user_data, variables)
+
+
+def test_validation_accepts_daily_frequency():
+    variables = {"BREW_PREFIX": "/opt/homebrew", "BREWFILE": "", "HOME": "/users/me"}
+    user_data = {
+        "tasks": {
+            "daily_task": {
+                "description": "Daily task",
+                "command": "echo hello",
                 "frequency": "daily",
             }
         }
     }
-    with pytest.raises(ValueError, match="must be 'weekly' or 'monthly'"):
-        load_task_defs(user_data, variables)
+    task_defs, _ = load_task_defs(user_data, variables)
+    assert task_defs["daily_task"].frequency == "daily"
 
 
 def test_validation_run_order_unknown_task():
@@ -273,10 +343,10 @@ def test_custom_task_appended_to_default_order():
         }
     }
     _, run_order = load_task_defs(user_data, variables)
-    # Custom task appended after all 11 defaults
+    # Custom task appended after all default tasks
     assert "my_task" in run_order
     assert run_order[-1] == "my_task"
-    assert len(run_order) == 12
+    assert len(run_order) == 13
 
 
 def test_custom_task_not_duplicated_with_explicit_order():
@@ -301,7 +371,7 @@ def test_custom_task_not_duplicated_with_explicit_order():
 
 def test_load_nonexistent_config_returns_defaults():
     config = Config.load(Path("/nonexistent/config.toml"))
-    assert len(config.task_defs) == 11
+    assert len(config.task_defs) == 12
     assert config.run_order[0] == "brew_update"
     assert config.is_enabled("brew_update") is True
     assert config.get_frequency("gcloud") == "monthly"

@@ -19,7 +19,7 @@
 ## Architecture
 
 ```
-defaults.toml → bundled task definitions (11 tasks), loaded via importlib.resources
+defaults.toml → bundled task definitions, loaded via importlib.resources
 config.py     → TaskDef dataclass, load_task_defs(), resolve_variables(), get_brew_prefix(),
                 Config.load() (3-layer merge: defaults.toml → user config → env vars)
 tasks.py      → _build_cmd(), run_task(), _run(), run_all_tasks() data-driven loop,
@@ -61,7 +61,7 @@ Do not add conditions to the filter or remove the `force_tasks is None` guard fr
 
 ### Frequency scheduling
 
-- Thresholds are 6 days for weekly and 27 days for monthly (not 7/30 — buffer for launchd schedule drift after sleep/reboot). State tracked in `~/.local/state/mac-upkeep/last-run.json`.
+- Thresholds are 20 hours for daily, 6 days for weekly, 27 days for monthly (not 24h/7d/30d — buffer for launchd schedule drift after sleep/reboot). State tracked in `~/.local/state/mac-upkeep/last-run.json`.
 - **Safety net**: prevents redundant runs from RunAtLoad boot triggers, launchd coalescing, and manual `mac-upkeep run`. `run_at_load true` is intentional — `StartCalendarInterval` does NOT coalesce from power-off (only sleep), so RunAtLoad is essential for laptops that reboot frequently.
 - Timestamps only update on successful non-dry-run execution. Corrupt/missing state file silently triggers re-run.
 - **`FREQUENCY_THRESHOLDS` is dual-purpose**: used for gating in `_should_run()` and for display in `format_next_run()`. `format_next_run()` accepts an optional `state` dict parameter to avoid redundant `_load_state()` calls — the `tasks` command pre-loads state once; `_run()` skip path omits it (one-off read is fine).
@@ -76,6 +76,10 @@ Do not add conditions to the filter or remove the `force_tasks is None` guard fr
 - **Bundle ID detection chain**: `CMUX_BUNDLE_ID` env var → Ghostty.app plist via `defaults read` → `com.apple.Terminal` fallback.
 - **Rich is a transitive dependency**: `typer>=0.12` requires `rich>=12.3.0`. Using Rich adds zero new runtime dependencies.
 - **`status` dashboard graceful degradation**: if `_get_service_info()` returns None (brew not installed, service not registered, or JSON parse failure), the service header is skipped and only the task scheduling summary is shown. Reuses `format_last_run()` and `format_next_run()` from tasks.py. Test by patching `mac_upkeep.cli._get_service_info` directly rather than mocking subprocess.run (avoids interfering with Config.load() → get_brew_prefix() subprocess call).
+
+### Handler-dispatched tasks
+
+A TaskDef with `handler="<name>"` and empty `command` bypasses subprocess building: `run_all_tasks` routes it through `_run_handler`, which applies filter + frequency + `detect` gates then calls `HANDLERS[name](config, output, dry_run)`. Handler modules register themselves in `tasks._register_handlers()` (called at import). `KNOWN_HANDLERS` drives config validation — unknown handler names are rejected early. Handlers emit per-step output via `output.task_debug()` and return one aggregate `TaskResult`.
 
 ### sudo + HOME
 
@@ -98,6 +102,7 @@ Do not add conditions to the filter or remove the `force_tasks is None` guard fr
 - **`terminal-notifier` is optional** — installed via `brew install terminal-notifier`.
 - **Do not open terminal windows from launchd** — fragile (focus stealing, macOS 13+ permission escalation). Use headless + notification + click-to-act.
 - **Testing**: `Config.load()` calls `get_brew_prefix()` which runs `subprocess.run(["brew", "--prefix"])`. Tests that mock `subprocess.run` or `shutil.which` will capture this call too (shared module objects). Mock `mac_upkeep.config.get_brew_prefix` directly in `init` command tests.
+- **`git_sync` SSH auth under launchd** relies on `~/.ssh/config` `IdentityAgent` (path-based, e.g. 1Password socket). `SSH_AUTH_SOCK` env vars are NOT inherited by LaunchAgents, so env-based agent forwarding won't work here — the `IdentityAgent` directive is the supported path.
 
 ## Release Process
 

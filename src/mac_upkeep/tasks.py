@@ -10,7 +10,7 @@ import shlex
 import shutil
 import subprocess
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,6 +18,8 @@ from mac_upkeep.config import Config, TaskDef, load_default_task_names
 from mac_upkeep.output import TaskResult
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from mac_upkeep.output import Output
 
 logger = logging.getLogger("mac_upkeep")
@@ -32,7 +34,27 @@ ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
 _xdg_state = os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state"))
 _STATE_DIR = Path(_xdg_state) / "mac-upkeep"
 _STATE_FILE = _STATE_DIR / "last-run.json"
-FREQUENCY_THRESHOLDS = {"weekly": 6, "monthly": 27}  # days (buffer for schedule drift)
+FREQUENCY_THRESHOLDS: dict[str, timedelta] = {
+    "daily": timedelta(hours=20),
+    "weekly": timedelta(days=6),
+    "monthly": timedelta(days=27),
+}  # buffer for schedule drift
+
+# Handler registry: task handler name → (config, output, dry_run) -> TaskResult.
+# Tasks set handler="<name>" in defaults.toml to dispatch here instead of running a command.
+HANDLERS: dict[str, Callable[[Config, Output, bool], TaskResult]] = {}
+KNOWN_HANDLERS: set[str] = set()  # kept in sync with HANDLERS; read by config validation
+
+
+def _register_handlers() -> None:
+    """Register built-in handlers. Local import avoids any import-cycle risk."""
+    from mac_upkeep import git_sync
+
+    HANDLERS["git_sync"] = git_sync.run_git_sync
+    KNOWN_HANDLERS.add("git_sync")
+
+
+_register_handlers()
 
 
 def _load_state() -> dict[str, str]:
@@ -59,8 +81,8 @@ def _should_run(task_key: str, config: Config) -> bool:
         last_run = datetime.fromisoformat(last_run_str)
     except ValueError:
         return True
-    threshold_days = FREQUENCY_THRESHOLDS.get(config.get_frequency(task_key), 6)
-    return (datetime.now() - last_run).days >= threshold_days
+    threshold = FREQUENCY_THRESHOLDS.get(config.get_frequency(task_key), timedelta(days=6))
+    return (datetime.now() - last_run) >= threshold
 
 
 def _update_last_run(task_key: str) -> None:
@@ -71,23 +93,31 @@ def _update_last_run(task_key: str) -> None:
 
 
 def format_last_run(last_run_str: str | None) -> str:
-    """Humanize a last-run ISO timestamp: 'today', '1 day ago', 'N days ago', or 'never'."""
+    """Humanize a last-run ISO timestamp: 'just now', 'Xh ago', 'N days ago', or 'never'."""
     if not last_run_str:
         return "never"
     try:
         last_run = datetime.fromisoformat(last_run_str)
     except ValueError:
         return "never"
-    days = (datetime.now() - last_run).days
-    if days == 0:
-        return "today"
+    elapsed = datetime.now() - last_run
+    if elapsed < timedelta(days=1):
+        if elapsed < timedelta(minutes=5):
+            return "just now"
+        hours = int(elapsed.total_seconds() // 3600)
+        if hours == 0:
+            return "just now"
+        if hours == 1:
+            return "1 hour ago"
+        return f"{hours}h ago"
+    days = elapsed.days
     if days == 1:
         return "1 day ago"
     return f"{days} days ago"
 
 
 def format_next_run(task_key: str, config: Config, state: dict[str, str] | None = None) -> str:
-    """Return relative time until task is next eligible: 'now', 'in 1 day', 'in N days'."""
+    """Return relative time until task is next eligible: 'now', 'in Xh', 'in N days'."""
     if state is None:
         state = _load_state()
     last_run_str = state.get(task_key)
@@ -98,13 +128,21 @@ def format_next_run(task_key: str, config: Config, state: dict[str, str] | None 
     except ValueError:
         return "now"
     frequency = config.get_frequency(task_key)
-    threshold = FREQUENCY_THRESHOLDS.get(frequency, 6)
-    remaining = threshold - (datetime.now() - last_run).days
-    if remaining <= 0:
+    threshold = FREQUENCY_THRESHOLDS.get(frequency, timedelta(days=6))
+    remaining = threshold - (datetime.now() - last_run)
+    if remaining <= timedelta(0):
         return "now"
-    if remaining == 1:
+    if remaining < timedelta(days=1):
+        hours = int(remaining.total_seconds() // 3600)
+        if hours == 0:
+            return "in <1h"
+        if hours == 1:
+            return "in 1 hour"
+        return f"in {hours}h"
+    remaining_days = threshold.days - (datetime.now() - last_run).days
+    if remaining_days == 1:
         return "in 1 day"
-    return f"in {remaining} days"
+    return f"in {remaining_days} days"
 
 
 def strip_ansi(text: str) -> str:
@@ -239,6 +277,57 @@ def _run(
     return result
 
 
+def _run_handler(
+    name: str,
+    td: TaskDef,
+    *,
+    config: Config,
+    output: Output,
+    dry_run: bool,
+    force_tasks: set[str] | None,
+) -> TaskResult:
+    """Dispatch a handler-driven task. Mirrors _run's filter/frequency/detect contract."""
+    task_key = name.lower().replace(" ", "_")
+
+    if force_tasks is not None and task_key not in force_tasks:
+        result = TaskResult(name, "skipped", reason="not selected")
+        output.task_done(result)
+        return result
+
+    if not dry_run and force_tasks is None and not _should_run(task_key, config):
+        next_str = format_next_run(task_key, config)
+        result = TaskResult(name, "skipped", reason=f"ran recently, next {next_str}")
+        output.task_done(result)
+        return result
+
+    if not config.is_enabled(task_key):
+        result = TaskResult(name, "skipped", reason="disabled")
+        output.task_done(result)
+        return result
+
+    if td.detect and not shutil.which(td.detect):
+        result = TaskResult(name, "skipped", reason="not installed")
+        output.task_done(result)
+        return result
+
+    output.task_start(name)
+    start = time.monotonic()
+    result = HANDLERS[td.handler](config, output, dry_run)
+    if result.duration == 0.0:
+        result = TaskResult(
+            result.name,
+            result.status,
+            reason=result.reason,
+            duration=time.monotonic() - start,
+        )
+    output.task_done(result)
+
+    if result.status == "ok" and not dry_run:
+        _update_last_run(task_key)
+
+    return result
+
+
 def run_all_tasks(
     *,
     config: Config,
@@ -252,6 +341,20 @@ def run_all_tasks(
     for task_name in config.run_order:
         td = config.task_defs.get(task_name)
         if td is None:
+            continue
+
+        # Handler-dispatched tasks bypass subprocess command building
+        if td.handler:
+            results.append(
+                _run_handler(
+                    task_name,
+                    td,
+                    config=config,
+                    output=output,
+                    dry_run=dry_run,
+                    force_tasks=force_tasks,
+                )
+            )
             continue
 
         # require_file tasks: check filter → enabled → file exists

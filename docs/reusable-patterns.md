@@ -15,6 +15,7 @@ Adjust versions/paths:
 ## Adapt
 
 - TOML-driven task definitions with `importlib.resources` bundling — for any CLI needing an extensible command registry where adding a task shouldn't require code changes
+- Handler registry dispatch (`HANDLERS: dict[str, Callable]` + `_run_handler`) — for any TOML-driven CLI that needs some tasks to run as Python rather than subprocess commands, without coupling the framework to specific handler implementations
 - `init` with system detection via `shutil.which()` — for any CLI replacing static example config files with generated, system-aware configs
 - 3-layer config merge (bundled `defaults.toml` → user `config.toml` → env vars) with field-level override — for any CLI needing layered configuration
 - `${VAR}` variable resolution in TOML fields — for portable paths across architectures (`${BREW_PREFIX}` resolves differently on Apple Silicon vs Intel)

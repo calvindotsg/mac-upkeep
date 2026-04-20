@@ -127,7 +127,7 @@ def run(
     Disable specific tasks via config file or MAC_UPKEEP_<TASK>=false environment variables.
 
     Task order: brew_update, brew_upgrade, gcloud, pnpm, uv, fisher,
-    mo_clean, mo_optimize, mo_purge, brew_cleanup, brew_bundle.
+    mo_clean, mo_optimize, mo_purge, brew_cleanup, brew_bundle, git_sync.
     brew_cleanup runs after mo_clean (which runs brew autoremove).
     brew_bundle runs last (homebrew/brew#21350).
 
@@ -318,6 +318,14 @@ def _generate_init_config(
     lines.append('# command = "docker system prune -f"')
     lines.append('# detect = "docker"')
     lines.append('# frequency = "monthly"')
+    lines.append("#")
+    lines.append("# git_sync pulls configured repos daily (fast-forward only, skips dirty)")
+    lines.append("# [git_sync]")
+    lines.append("# repos = [")
+    lines.append('#     "~/Documents/github/org/repo",')
+    lines.append('#     "~/Documents/github/org/other-*",  # glob supported')
+    lines.append("# ]")
+    lines.append("# skip_dirty = true")
     lines.append("#")
     if detected:
         order_str = str([t for t, _ in detected]).replace("'", '"')

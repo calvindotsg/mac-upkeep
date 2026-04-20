@@ -8,8 +8,10 @@ from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from mac_upkeep.config import Config, TaskDef
-from mac_upkeep.output import Output
+from mac_upkeep.output import Output, TaskResult
 from mac_upkeep.tasks import (
+    HANDLERS,
+    KNOWN_HANDLERS,
     _build_cmd,
     _run,
     _should_run,
@@ -380,9 +382,19 @@ def test_format_last_run_corrupt():
     assert format_last_run("not-a-date") == "never"
 
 
-def test_format_last_run_today():
+def test_format_last_run_just_now():
     ts = datetime.now().isoformat(timespec="seconds")
-    assert format_last_run(ts) == "today"
+    assert format_last_run(ts) == "just now"
+
+
+def test_format_last_run_hours_ago():
+    ts = (datetime.now() - timedelta(hours=3)).isoformat(timespec="seconds")
+    assert format_last_run(ts) == "3h ago"
+
+
+def test_format_last_run_one_hour_ago():
+    ts = (datetime.now() - timedelta(hours=1, minutes=5)).isoformat(timespec="seconds")
+    assert format_last_run(ts) == "1 hour ago"
 
 
 def test_format_last_run_one_day_ago():
@@ -432,3 +444,194 @@ def test_format_next_run_with_state_param(tmp_path, monkeypatch):
     recent = (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds")
     state = {"gcloud": recent}
     assert format_next_run("gcloud", config, state) == "in 26 days"
+
+
+# --- daily frequency ---
+
+
+def test_should_run_daily_blocks_within_20h(tmp_path, monkeypatch):
+    """Daily task that ran 10h ago must be skipped (threshold 20h)."""
+    state_file = tmp_path / "last-run.json"
+    recent = (datetime.now() - timedelta(hours=10)).isoformat(timespec="seconds")
+    state_file.write_text(json.dumps({"git_sync": recent}))
+    monkeypatch.setattr("mac_upkeep.tasks._STATE_FILE", state_file)
+    config = Config.load()
+    config.task_defs["git_sync"] = TaskDef(
+        name="git_sync", description="", command="git", frequency="daily"
+    )
+    assert _should_run("git_sync", config) is False
+
+
+def test_should_run_daily_allows_after_20h(tmp_path, monkeypatch):
+    """Daily task that ran 21h ago is eligible again."""
+    state_file = tmp_path / "last-run.json"
+    old = (datetime.now() - timedelta(hours=21)).isoformat(timespec="seconds")
+    state_file.write_text(json.dumps({"git_sync": old}))
+    monkeypatch.setattr("mac_upkeep.tasks._STATE_FILE", state_file)
+    config = Config.load()
+    config.task_defs["git_sync"] = TaskDef(
+        name="git_sync", description="", command="git", frequency="daily"
+    )
+    assert _should_run("git_sync", config) is True
+
+
+def test_format_next_run_daily_hour_scale(tmp_path, monkeypatch):
+    """Daily task ran ~2h30m ago → ~17h30m remaining → 'in 17h'."""
+    monkeypatch.setattr("mac_upkeep.tasks._STATE_FILE", tmp_path / "last-run.json")
+    config = Config.load()
+    config.task_defs["git_sync"] = TaskDef(
+        name="git_sync", description="", command="git", frequency="daily"
+    )
+    recent = (datetime.now() - timedelta(hours=2, minutes=30)).isoformat(timespec="seconds")
+    assert format_next_run("git_sync", config, {"git_sync": recent}) == "in 17h"
+
+
+def test_format_next_run_daily_one_hour(tmp_path, monkeypatch):
+    monkeypatch.setattr("mac_upkeep.tasks._STATE_FILE", tmp_path / "last-run.json")
+    config = Config.load()
+    config.task_defs["git_sync"] = TaskDef(
+        name="git_sync", description="", command="git", frequency="daily"
+    )
+    recent = (datetime.now() - timedelta(hours=18, minutes=45)).isoformat(timespec="seconds")
+    assert format_next_run("git_sync", config, {"git_sync": recent}) == "in 1 hour"
+
+
+def test_format_next_run_daily_under_1h(tmp_path, monkeypatch):
+    monkeypatch.setattr("mac_upkeep.tasks._STATE_FILE", tmp_path / "last-run.json")
+    config = Config.load()
+    config.task_defs["git_sync"] = TaskDef(
+        name="git_sync", description="", command="git", frequency="daily"
+    )
+    recent = (datetime.now() - timedelta(hours=19, minutes=30)).isoformat(timespec="seconds")
+    assert format_next_run("git_sync", config, {"git_sync": recent}) == "in <1h"
+
+
+# --- handler dispatch ---
+
+
+def _stub_handler(name="stub_task", status="ok", reason="stub ran"):
+    """Factory for a handler that returns a known TaskResult and records calls."""
+    calls = []
+
+    def handler(config, output, dry_run):
+        calls.append({"dry_run": dry_run})
+        return TaskResult(name, status, reason=reason)
+
+    return handler, calls
+
+
+def test_handler_dispatch_runs_and_records_state(tmp_path, monkeypatch):
+    """run_all_tasks invokes the registered handler and updates last-run state."""
+    state_file = tmp_path / "last-run.json"
+    monkeypatch.setattr("mac_upkeep.tasks._STATE_FILE", state_file)
+
+    handler, calls = _stub_handler()
+    monkeypatch.setitem(HANDLERS, "stub", handler)
+    monkeypatch.setattr("mac_upkeep.tasks.KNOWN_HANDLERS", {"stub", "git_sync"})
+
+    config = Config.load()
+    config.task_defs["stub_task"] = TaskDef(
+        name="stub_task",
+        description="",
+        command="",
+        detect="",
+        handler="stub",
+        frequency="daily",
+    )
+    config.run_order = ["stub_task"]
+
+    output = MagicMock(spec=Output)
+    results = run_all_tasks(config=config, output=output, dry_run=False)
+
+    assert len(calls) == 1
+    assert results[0].status == "ok"
+    state = json.loads(state_file.read_text())
+    assert "stub_task" in state
+
+
+def test_handler_dispatch_frequency_gate_skips(tmp_path, monkeypatch):
+    """Recent timestamp in state → handler not invoked."""
+    state_file = tmp_path / "last-run.json"
+    recent = (datetime.now() - timedelta(hours=1)).isoformat(timespec="seconds")
+    state_file.write_text(json.dumps({"stub_task": recent}))
+    monkeypatch.setattr("mac_upkeep.tasks._STATE_FILE", state_file)
+
+    handler, calls = _stub_handler()
+    monkeypatch.setitem(HANDLERS, "stub", handler)
+    monkeypatch.setattr("mac_upkeep.tasks.KNOWN_HANDLERS", {"stub", "git_sync"})
+
+    config = Config.load()
+    config.task_defs["stub_task"] = TaskDef(
+        name="stub_task",
+        description="",
+        command="",
+        detect="",
+        handler="stub",
+        frequency="daily",
+    )
+    config.run_order = ["stub_task"]
+
+    output = MagicMock(spec=Output)
+    results = run_all_tasks(config=config, output=output, dry_run=False)
+
+    assert calls == []
+    assert results[0].status == "skipped"
+    assert "ran recently" in results[0].reason
+
+
+def test_handler_dispatch_force_filter(tmp_path, monkeypatch):
+    """force_tasks without the handler's key skips it without invoking."""
+    monkeypatch.setattr("mac_upkeep.tasks._STATE_FILE", tmp_path / "last-run.json")
+
+    handler, calls = _stub_handler()
+    monkeypatch.setitem(HANDLERS, "stub", handler)
+    monkeypatch.setattr("mac_upkeep.tasks.KNOWN_HANDLERS", {"stub", "git_sync"})
+
+    config = Config.load()
+    config.task_defs["stub_task"] = TaskDef(
+        name="stub_task",
+        description="",
+        command="",
+        detect="",
+        handler="stub",
+    )
+    config.run_order = ["stub_task"]
+
+    output = MagicMock(spec=Output)
+    results = run_all_tasks(config=config, output=output, dry_run=False, force_tasks={"other_task"})
+
+    assert calls == []
+    assert results[0].status == "skipped"
+    assert results[0].reason == "not selected"
+
+
+def test_handler_dispatch_detect_miss(tmp_path, monkeypatch):
+    """detect binary missing → skipped 'not installed', handler not invoked."""
+    monkeypatch.setattr("mac_upkeep.tasks._STATE_FILE", tmp_path / "last-run.json")
+
+    handler, calls = _stub_handler()
+    monkeypatch.setitem(HANDLERS, "stub", handler)
+    monkeypatch.setattr("mac_upkeep.tasks.KNOWN_HANDLERS", {"stub", "git_sync"})
+    monkeypatch.setattr("mac_upkeep.tasks.shutil.which", lambda _: None)
+
+    config = Config.load()
+    config.task_defs["stub_task"] = TaskDef(
+        name="stub_task",
+        description="",
+        command="",
+        detect="definitely-not-a-real-binary",
+        handler="stub",
+    )
+    config.run_order = ["stub_task"]
+
+    output = MagicMock(spec=Output)
+    results = run_all_tasks(config=config, output=output, dry_run=False)
+
+    assert calls == []
+    assert results[0].status == "skipped"
+    assert results[0].reason == "not installed"
+
+
+def test_known_handlers_kept_in_sync():
+    """KNOWN_HANDLERS starts empty (no handlers registered in Phase 3)."""
+    assert KNOWN_HANDLERS == set(HANDLERS.keys())

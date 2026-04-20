@@ -65,6 +65,12 @@ command = "brew bundle cleanup --force --file=${BREWFILE}"
 detect = "brew"
 require_file = "${BREWFILE}"
 
+[tasks.git_sync]
+description = "Pull configured git repositories"
+handler = "git_sync"
+detect = "git"
+frequency = "daily"
+
 [run]
 order = [
     "brew_update",
@@ -78,4 +84,5 @@ order = [
     "mo_purge",
     "brew_cleanup",
     "brew_bundle",
+    "git_sync",
 ]

@@ -4,9 +4,9 @@
 
 ## What it does
 
-Runs 11 maintenance tasks on boot + weekly/monthly schedule via brew services:
+Runs maintenance tasks on boot + recurring schedule via brew services:
 Homebrew update/upgrade/cleanup, gcloud/pnpm/uv cache pruning, Fish plugin
-updates, mole system optimization, and Brewfile enforcement.
+updates, mole system optimization, Brewfile enforcement, and git repository sync.
 
 ## Install
 
@@ -20,7 +20,7 @@ updates, mole system optimization, and Brewfile enforcement.
 - TOML-driven task registry — add tasks without code changes
 - Rich Live TUI for interactive use, plain logging for launchd
 - macOS notifications via terminal-notifier with osascript fallback
-- Per-task frequency scheduling (weekly/monthly) with schedule drift buffers and next-run visibility
+- Per-task frequency scheduling (daily/weekly/monthly) with schedule drift buffers and next-run visibility
 - Custom tasks in user config.toml
 
 ## Links

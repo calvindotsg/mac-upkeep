@@ -31,6 +31,7 @@ class TaskDef:
     shell: str = ""
     require_file: str = ""
     timeout: int = 300
+    handler: str = ""
 
 
 def get_brew_prefix() -> str:
@@ -133,12 +134,20 @@ def load_task_defs(
                     run_order.append(name)
 
     # Validate task definitions
+    from mac_upkeep.tasks import KNOWN_HANDLERS  # local import to avoid cycle
+
     for name, td in task_defs.items():
-        if not td.command:
-            raise ValueError(f"Task '{name}' has no command")
-        if td.frequency not in ("weekly", "monthly"):
+        if td.command and td.handler:
+            raise ValueError(f"Task '{name}': cannot set both 'command' and 'handler'")
+        if not td.command and not td.handler:
+            raise ValueError(f"Task '{name}' has no command or handler")
+        if td.handler and td.handler not in KNOWN_HANDLERS:
+            known = ", ".join(sorted(KNOWN_HANDLERS)) or "(none registered)"
+            raise ValueError(f"Task '{name}': unknown handler '{td.handler}' (known: {known})")
+        if td.frequency not in ("daily", "weekly", "monthly"):
             raise ValueError(
-                f"Task '{name}': frequency must be 'weekly' or 'monthly', got '{td.frequency}'"
+                f"Task '{name}': frequency must be 'daily', 'weekly', or 'monthly', "
+                f"got '{td.frequency}'"
             )
     for entry in run_order:
         if entry not in task_defs:
@@ -185,6 +194,7 @@ def _parse_task_def(name: str, data: dict) -> TaskDef:
         shell=data.get("shell", ""),
         require_file=data.get("require_file", ""),
         timeout=data.get("timeout", 300),
+        handler=data.get("handler", ""),
     )
 
 
@@ -197,6 +207,8 @@ class Config:
     brewfile: str | None = None
     notify: bool = True
     notify_sound: str = "Submarine"
+    git_sync_repos: list[str] = field(default_factory=list)
+    git_sync_skip_dirty: bool = True
 
     @classmethod
     def load(cls, path: Path = DEFAULT_CONFIG_PATH) -> Config:
@@ -216,6 +228,12 @@ class Config:
                 config.notify = bool(notif["enabled"])
             if "sound" in notif:
                 config.notify_sound = str(notif["sound"])
+
+        # Extract git_sync settings from user config
+        if user_data and "git_sync" in user_data:
+            gs = user_data["git_sync"]
+            config.git_sync_repos = list(gs.get("repos", []))
+            config.git_sync_skip_dirty = bool(gs.get("skip_dirty", True))
 
         # Extract brewfile from user config
         if user_data and "paths" in user_data and "brewfile" in user_data["paths"]:
