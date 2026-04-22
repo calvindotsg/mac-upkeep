@@ -34,9 +34,9 @@ uvx mac-upkeep run            # one-off without installing
 | `pnpm` | Prune pnpm content-addressable store | Monthly |
 | `uv` | Prune uv package cache | Monthly |
 | `fisher` | Update Fish shell plugins | Weekly |
-| `mo_clean` | Clean system and user caches ([mole](https://github.com/nicehash/mole)) | Weekly |
-| `mo_optimize` | Optimize DNS, Spotlight, fonts, Dock ([mole](https://github.com/nicehash/mole)) | Weekly |
-| `mo_purge` | Remove old project artifacts ([mole](https://github.com/nicehash/mole)) | Monthly |
+| `mo_clean` | Clean system and user caches ([Mole](https://github.com/tw93/Mole)) | Weekly |
+| `mo_optimize` | Optimize DNS, Spotlight, fonts, Dock ([Mole](https://github.com/tw93/Mole)) | Weekly |
+| `mo_purge` | Remove old project artifacts ([Mole](https://github.com/tw93/Mole)) | Monthly |
 | `brew_cleanup` | Remove old versions and cache files | Monthly |
 | `brew_bundle` | Remove packages not in Brewfile | Weekly |
 | `git_sync` | Pull configured git repositories | Daily |
