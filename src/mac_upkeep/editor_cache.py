@@ -74,9 +74,15 @@ def _dir_size(path: Path) -> int:
 
 
 def _pgrep_running(process: str) -> bool:
-    """True if a process named exactly `process` is running (pgrep -x)."""
+    """True if a process named exactly `process` appears to be running (pgrep -x).
+
+    Fail-closed: any uncertainty returns True so the caller skips deletion. An
+    empty/missing process name, a pgrep that errors (exit >=2 = bad args /
+    internal error, distinct from exit 1 = no match), or an OS/timeout error all
+    count as "assume running, don't delete".
+    """
     if not process:
-        return False
+        return True
     try:
         result = subprocess.run(
             ["pgrep", "-x", process],
@@ -85,9 +91,10 @@ def _pgrep_running(process: str) -> bool:
             timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
-        # If we can't tell, assume running and skip — never delete on doubt.
         return True
-    return result.returncode == 0
+    # pgrep exit codes: 0 = match (running), 1 = no match (not running),
+    # >=2 = pgrep itself errored → fail-closed (treat as running).
+    return result.returncode != 1
 
 
 def _is_safe_target(path: Path) -> bool:
@@ -117,8 +124,18 @@ def _clean_target(target: Path, min_size_mb: int, output: Output, dry_run: bool)
     if not _is_safe_target(target):
         output.task_debug(f"  refused unsafe path: {target}")
         return 0
+    # Operate on the canonical resolved path so the validated path and the
+    # deleted path are identical — closes any symlink-swap TOCTOU between the
+    # _is_safe_target check and the rmtree. Re-validate the resolved path.
+    try:
+        safe = target.resolve(strict=True)
+    except OSError:
+        return 0
+    if not _is_safe_target(safe):
+        output.task_debug(f"  refused unsafe path: {target}")
+        return 0
 
-    size = _dir_size(target)
+    size = _dir_size(safe)
     size_mb = size // (1024 * 1024)
     if size_mb < min_size_mb:
         output.task_debug(f"  {target.name}: {size_mb}MB below {min_size_mb}MB threshold, skipped")
@@ -129,7 +146,7 @@ def _clean_target(target: Path, min_size_mb: int, output: Output, dry_run: bool)
         return size
 
     try:
-        shutil.rmtree(target)
+        shutil.rmtree(safe)
     except OSError as exc:
         output.task_debug(f"  failed to clean {target.name}: {exc}")
         raise

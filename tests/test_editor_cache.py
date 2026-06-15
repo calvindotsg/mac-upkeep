@@ -89,6 +89,29 @@ def test_pgrep_running_assumes_running_on_error(monkeypatch):
     assert _pgrep_running("Notion") is True
 
 
+def test_pgrep_running_error_code_assumes_running(monkeypatch):
+    # pgrep exit >=2 = pgrep itself errored (bad args/internal), NOT "no match".
+    monkeypatch.setattr(
+        editor_cache.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a, returncode=2),
+    )
+    assert _pgrep_running("--weird") is True
+
+
+def test_pgrep_running_timeout_assumes_running(monkeypatch):
+    def _timeout(*a, **k):
+        raise subprocess.TimeoutExpired(cmd=["pgrep"], timeout=10)
+
+    monkeypatch.setattr(editor_cache.subprocess, "run", _timeout)
+    assert _pgrep_running("Notion") is True
+
+
+def test_pgrep_running_empty_process_assumes_running():
+    # A missing `process` must not silently bypass the running-app guard.
+    assert _pgrep_running("") is True
+
+
 # --- _is_safe_target ---
 
 
@@ -155,6 +178,27 @@ def test_cleans_when_app_closed(monkeypatch, tmp_path):
     assert not os.path.exists(target)  # deleted
     assert result.status == "ok"
     assert "MB freed" in result.reason
+
+
+def test_reason_combines_freed_and_running(monkeypatch, tmp_path):
+    # Two apps: one running (skipped), one closed with a large cache (cleaned).
+    # Exercises the ", ".join(parts) path with both segments populated.
+    monkeypatch.setattr(editor_cache, "_SAFE_ROOT", tmp_path)
+    monkeypatch.setattr(editor_cache, "_pgrep_running", lambda proc: proc == "Zed")
+    closed = _make_cache(tmp_path, "Notion", "CacheStorage", size=2 * 1024 * 1024)
+    config = _config(
+        [
+            _app("Notion", [closed], process="Notion"),
+            _app("Zed", [str(tmp_path / "Zed" / "cache")], process="Zed"),
+        ]
+    )
+    output = MagicMock()
+
+    result = run_editor_cache(config, output, dry_run=False)
+
+    assert result.status == "ok"
+    assert "MB freed" in result.reason
+    assert "running" in result.reason
 
 
 def test_size_gate_skips_small_cache(monkeypatch, tmp_path):

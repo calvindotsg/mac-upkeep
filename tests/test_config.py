@@ -377,6 +377,30 @@ def test_load_nonexistent_config_returns_defaults():
     assert config.get_frequency("gcloud") == "monthly"
 
 
+def test_load_editor_cache_apps(tmp_path):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        "[[editor_cache.apps]]\n"
+        'name = "Notion"\n'
+        'process = "Notion"\n'
+        "min_size_mb = 0\n"
+        'targets = ["~/Library/Application Support/Notion/X"]\n'
+    )
+    config = Config.load(cfg_path)
+    assert len(config.editor_cache_apps) == 1
+    app = config.editor_cache_apps[0]
+    assert app["name"] == "Notion"
+    assert app["process"] == "Notion"
+    assert app["targets"] == ["~/Library/Application Support/Notion/X"]
+
+
+def test_load_editor_cache_apps_absent_defaults_empty(tmp_path):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text('[tasks.brew_update]\nfrequency = "monthly"\n')
+    config = Config.load(cfg_path)
+    assert config.editor_cache_apps == []
+
+
 def test_config_is_enabled():
     config = Config.load(Path("/nonexistent/config.toml"))
     assert config.is_enabled("brew_update") is True
