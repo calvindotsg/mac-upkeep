@@ -209,6 +209,7 @@ class Config:
     notify_sound: str = "Submarine"
     git_sync_repos: list[str] = field(default_factory=list)
     git_sync_skip_dirty: bool = True
+    editor_cache_apps: list[dict] = field(default_factory=list)
 
     @classmethod
     def load(cls, path: Path = DEFAULT_CONFIG_PATH) -> Config:
@@ -234,6 +235,11 @@ class Config:
             gs = user_data["git_sync"]
             config.git_sync_repos = list(gs.get("repos", []))
             config.git_sync_skip_dirty = bool(gs.get("skip_dirty", True))
+
+        # Extract editor_cache app overrides from user config (else handler uses
+        # its built-in DEFAULT_APPS).
+        if user_data and "editor_cache" in user_data:
+            config.editor_cache_apps = list(user_data["editor_cache"].get("apps", []))
 
         # Extract brewfile from user config
         if user_data and "paths" in user_data and "brewfile" in user_data["paths"]:

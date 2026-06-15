@@ -48,10 +48,13 @@ KNOWN_HANDLERS: set[str] = set()  # kept in sync with HANDLERS; read by config v
 
 def _register_handlers() -> None:
     """Register built-in handlers. Local import avoids any import-cycle risk."""
-    from mac_upkeep import git_sync
+    from mac_upkeep import editor_cache, git_sync
 
     HANDLERS["git_sync"] = git_sync.run_git_sync
     KNOWN_HANDLERS.add("git_sync")
+
+    HANDLERS["editor_cache"] = editor_cache.run_editor_cache
+    KNOWN_HANDLERS.add("editor_cache")
 
 
 _register_handlers()
