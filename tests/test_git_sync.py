@@ -285,22 +285,19 @@ def test_pull_timeout_does_not_crash_run(tmp_path, monkeypatch):
     p = _make_repo(tmp_path, "biz")
     config = _config([p])
     output = MagicMock()
-    steps = [
-        _cp(returncode=0, stdout="true\n"),
-        _cp(returncode=0, stdout="origin\n"),
-        _cp(returncode=0, stdout="main\n"),
-        _cp(returncode=0, stdout="origin/main\n"),
-        _cp(returncode=0, stdout=""),  # clean worktree
-        subprocess.TimeoutExpired(cmd=["git", "pull"], timeout=60),  # pull hangs
-    ]
-
-    def fake_run(*a, **k):
-        step = steps.pop(0)
-        if isinstance(step, BaseException):
-            raise step
-        return step
-
-    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", fake_run)
+    # MagicMock raises any exception instance found in side_effect, so the pull
+    # step (last) raises TimeoutExpired exactly where _run_git calls subprocess.run.
+    run_mock = MagicMock(
+        side_effect=[
+            _cp(returncode=0, stdout="true\n"),
+            _cp(returncode=0, stdout="origin\n"),
+            _cp(returncode=0, stdout="main\n"),
+            _cp(returncode=0, stdout="origin/main\n"),
+            _cp(returncode=0, stdout=""),  # clean worktree
+            subprocess.TimeoutExpired(cmd=["git", "pull"], timeout=60),  # pull hangs
+        ]
+    )
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run_mock)
     result = run_git_sync(config, output, dry_run=False)
     assert result.status == "failed"
     assert "1 failed: biz" == result.reason
