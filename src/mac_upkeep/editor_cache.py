@@ -123,6 +123,12 @@ def _is_safe_target(path: Path) -> bool:
 def _clean_target(target: Path, min_size_mb: int, output: Output, dry_run: bool) -> int:
     """Clean one target dir if eligible. Returns bytes freed (0 if skipped)."""
     if not target.is_dir():
+        # A path that exists but isn't a directory is almost certainly a
+        # misconfigured target — surface it (the handler's debug output is the
+        # only feedback channel under launchd). A missing path is normal (most
+        # machines lack most default targets), so stay silent there.
+        if target.exists():
+            output.task_debug(f"  skipped (not a directory): {target}")
         return 0
     if not _is_safe_target(target):
         output.task_debug(f"  refused unsafe path: {target}")

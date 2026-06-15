@@ -280,6 +280,35 @@ def test_empty_config_falls_back_to_default_apps(monkeypatch, tmp_path):
     assert result.reason == f"{len(DEFAULT_APPS)} running"
 
 
+def test_custom_apps_replace_default_apps(monkeypatch):
+    # A non-empty editor_cache_apps must REPLACE DEFAULT_APPS, not merge with it.
+    checked: list[str] = []
+    monkeypatch.setattr(editor_cache, "_pgrep_running", lambda proc: checked.append(proc) or True)
+    config = _config([_app("Custom", ["~/x"], process="CustomProc")])
+
+    run_editor_cache(config, MagicMock(), dry_run=False)
+
+    # Only the custom app's process is consulted — no Notion/zed from DEFAULT_APPS.
+    assert checked == ["CustomProc"]
+
+
+def test_file_target_skipped_with_feedback(monkeypatch, tmp_path):
+    # A target that exists but is a file (misconfig) is skipped WITH a debug line.
+    _use_tmp_root(monkeypatch, tmp_path, running=False)
+    appdir = tmp_path / "App"
+    appdir.mkdir()
+    file_target = appdir / "cache"
+    file_target.write_text("x")
+    config = _config([_app("App", [str(file_target)])])
+    output = MagicMock()
+
+    result = run_editor_cache(config, output, dry_run=False)
+
+    assert os.path.isfile(file_target)  # not deleted
+    assert result.status == "ok"
+    assert any("not a directory" in c[0][0] for c in output.task_debug.call_args_list)
+
+
 def test_rmtree_failure_reports_failed(monkeypatch, tmp_path):
     _use_tmp_root(monkeypatch, tmp_path, running=False)
     target = _make_cache(tmp_path, "Notion", "CacheStorage", size=1024)
