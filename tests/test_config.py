@@ -394,7 +394,7 @@ def test_env_var_disables_task(monkeypatch):
     monkeypatch.setenv("MAC_UPKEEP_GCLOUD", "false")
     config = Config.load(Path("/nonexistent/config.toml"))
     assert not config.is_enabled("gcloud")
-    assert config.is_enabled("pnpm")
+    assert config.is_enabled("uv")  # unrelated task stays enabled
 
 
 def test_env_var_overrides_config(tmp_path):
