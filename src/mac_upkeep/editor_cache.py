@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -67,8 +68,10 @@ def _dir_size(path: Path) -> int:
                 st = fp.lstat()
             except OSError:
                 continue
-            # Skip symlinks: count only real bytes that deletion reclaims.
-            if not os.path.islink(fp):
+            # Skip symlinks: count only real bytes that deletion reclaims. Test
+            # the mode bits from the single lstat above rather than a second
+            # os.path.islink syscall (avoids a stat-vs-stat TOCTOU).
+            if not stat.S_ISLNK(st.st_mode):
                 total += st.st_size
     return total
 

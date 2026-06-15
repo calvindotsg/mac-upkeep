@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from unittest.mock import MagicMock
 
@@ -158,8 +159,6 @@ def test_skips_when_app_running(monkeypatch, tmp_path):
 
     result = run_editor_cache(config, output, dry_run=False)
 
-    import os
-
     assert os.path.isdir(target)  # not deleted
     assert result.status == "ok"
     assert "running" in result.reason
@@ -167,13 +166,11 @@ def test_skips_when_app_running(monkeypatch, tmp_path):
 
 def test_cleans_when_app_closed(monkeypatch, tmp_path):
     _use_tmp_root(monkeypatch, tmp_path, running=False)
-    target = _make_cache(tmp_path, "Notion", "CacheStorage", size=2 * 1024 * 1024)
+    target = _make_cache(tmp_path, "Notion", "CacheStorage", size=1024)
     config = _config([_app("Notion", [target])])
     output = MagicMock()
 
     result = run_editor_cache(config, output, dry_run=False)
-
-    import os
 
     assert not os.path.exists(target)  # deleted
     assert result.status == "ok"
@@ -185,7 +182,7 @@ def test_reason_combines_freed_and_running(monkeypatch, tmp_path):
     # Exercises the ", ".join(parts) path with both segments populated.
     monkeypatch.setattr(editor_cache, "_SAFE_ROOT", tmp_path)
     monkeypatch.setattr(editor_cache, "_pgrep_running", lambda proc: proc == "Zed")
-    closed = _make_cache(tmp_path, "Notion", "CacheStorage", size=2 * 1024 * 1024)
+    closed = _make_cache(tmp_path, "Notion", "CacheStorage", size=1024)
     config = _config(
         [
             _app("Notion", [closed], process="Notion"),
@@ -211,8 +208,6 @@ def test_size_gate_skips_small_cache(monkeypatch, tmp_path):
 
     result = run_editor_cache(config, output, dry_run=False)
 
-    import os
-
     assert os.path.isdir(target)  # below threshold → kept
     assert result.reason == "nothing to clean"
 
@@ -227,26 +222,37 @@ def test_size_gate_cleans_large_cache(monkeypatch, tmp_path):
 
     result = run_editor_cache(config, output, dry_run=False)
 
-    import os
-
     assert not os.path.exists(target)  # above threshold → cleaned
     assert "3000MB freed" in result.reason
 
 
 def test_dry_run_deletes_nothing(monkeypatch, tmp_path):
     _use_tmp_root(monkeypatch, tmp_path, running=False)
-    target = _make_cache(tmp_path, "Notion", "CacheStorage", size=2 * 1024 * 1024)
+    target = _make_cache(tmp_path, "Notion", "CacheStorage", size=1024)
     config = _config([_app("Notion", [target])])
     output = MagicMock()
 
     result = run_editor_cache(config, output, dry_run=True)
 
-    import os
-
     assert os.path.isdir(target)  # preserved
     assert result.status == "ok"
     assert "would free" in result.reason
     assert any("would clean" in c[0][0] for c in output.task_debug.call_args_list)
+
+
+def test_dry_run_with_running_app(monkeypatch, tmp_path):
+    # dry-run + every app running: exercises the dry-run early return when
+    # nothing would be freed (n_running > 0).
+    _use_tmp_root(monkeypatch, tmp_path, running=True)
+    target = _make_cache(tmp_path, "Notion", "CacheStorage", size=1024)
+    config = _config([_app("Notion", [target])])
+    output = MagicMock()
+
+    result = run_editor_cache(config, output, dry_run=True)
+
+    assert os.path.isdir(target)  # nothing deleted
+    assert result.status == "ok"
+    assert result.reason == "dry-run: would free 0MB"
 
 
 def test_missing_target_is_skipped(monkeypatch, tmp_path):
@@ -276,7 +282,7 @@ def test_empty_config_falls_back_to_default_apps(monkeypatch, tmp_path):
 
 def test_rmtree_failure_reports_failed(monkeypatch, tmp_path):
     _use_tmp_root(monkeypatch, tmp_path, running=False)
-    target = _make_cache(tmp_path, "Notion", "CacheStorage", size=2 * 1024 * 1024)
+    target = _make_cache(tmp_path, "Notion", "CacheStorage", size=1024)
     config = _config([_app("Notion", [target])])
     output = MagicMock()
 
