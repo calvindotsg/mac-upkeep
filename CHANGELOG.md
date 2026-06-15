@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.0](https://github.com/calvindotsg/mac-upkeep/compare/v2.4.2...v2.5.0) (2026-06-15)
+
+
+### Features
+
+* add editor_cache task for Notion/Zed caches mole misses ([#41](https://github.com/calvindotsg/mac-upkeep/issues/41)) ([fd4d3e6](https://github.com/calvindotsg/mac-upkeep/commit/fd4d3e63968f88528095e7700f53dbf02f3d1fc8))
+
 ## [2.4.2](https://github.com/calvindotsg/mac-upkeep/compare/v2.4.1...v2.4.2) (2026-06-15)
 
 
