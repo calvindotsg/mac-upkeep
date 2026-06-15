@@ -267,7 +267,7 @@ def test_missing_target_is_skipped(monkeypatch, tmp_path):
     assert result.reason == "nothing to clean"
 
 
-def test_empty_config_falls_back_to_default_apps(monkeypatch, tmp_path):
+def test_empty_config_falls_back_to_default_apps(monkeypatch):
     # No app override → DEFAULT_APPS used. Force every app "running" so nothing
     # is deleted; the running count proves all defaults were iterated.
     monkeypatch.setattr(editor_cache, "_pgrep_running", lambda _proc: True)
@@ -324,3 +324,27 @@ def test_rmtree_failure_reports_failed(monkeypatch, tmp_path):
 
     assert result.status == "failed"
     assert "Notion" in result.reason
+
+
+def test_multi_target_first_failure_aborts_remaining(monkeypatch, tmp_path):
+    # An app with multiple targets: a failure on target 1 marks the app failed
+    # and abandons its remaining targets (Notion ships 4 default targets).
+    _use_tmp_root(monkeypatch, tmp_path, running=False)
+    t1 = _make_cache(tmp_path, "App", "cache1", size=1024)
+    t2 = _make_cache(tmp_path, "App", "cache2", size=1024)
+    config = _config([_app("App", [t1, t2])])
+    output = MagicMock()
+    calls = {"n": 0}
+
+    def _boom(_path):
+        calls["n"] += 1
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(editor_cache.shutil, "rmtree", _boom)
+
+    result = run_editor_cache(config, output, dry_run=False)
+
+    assert result.status == "failed"
+    assert "App" in result.reason
+    assert calls["n"] == 1  # bailed after target 1; target 2 never attempted
+    assert os.path.isdir(t2)  # remaining target untouched
