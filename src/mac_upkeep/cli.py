@@ -196,7 +196,7 @@ def tasks() -> None:
         for name, td in task_list:
             if not td.enabled:
                 status = "[dim]disabled[/dim]"
-            elif shutil.which(td.detect) is None:
+            elif td.detect and shutil.which(td.detect) is None:
                 status = "[yellow]not found[/yellow]"
             else:
                 status = "[green]ready[/green]"
@@ -209,7 +209,7 @@ def tasks() -> None:
         for name, td in task_list:
             if not td.enabled:
                 status = "disabled"
-            elif shutil.which(td.detect) is None:
+            elif td.detect and shutil.which(td.detect) is None:
                 status = "not found"
             else:
                 status = "ready"
