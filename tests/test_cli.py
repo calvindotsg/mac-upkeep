@@ -65,6 +65,34 @@ def test_tasks_shows_not_found_status(tmp_path):
     assert "not found" in result.output
 
 
+def test_tasks_handler_without_detect_shows_ready():
+    # A handler task has no `detect` binary; even when shutil.which() returns None
+    # for everything, it must show "ready" (or "disabled") — never "not found".
+    from mac_upkeep.config import Config, TaskDef
+
+    cfg = Config()
+    cfg.task_defs = {
+        "editor_cache": TaskDef(
+            name="editor_cache",
+            description="handler task",
+            command="",
+            handler="editor_cache",
+            detect="",
+            enabled=True,
+        )
+    }
+    cfg.run_order = ["editor_cache"]
+    with (
+        patch("mac_upkeep.cli.Config.load", return_value=cfg),
+        patch("mac_upkeep.cli.shutil.which", return_value=None),
+    ):
+        result = runner.invoke(app, ["tasks"])
+    assert result.exit_code == 0
+    line = next(line for line in result.output.splitlines() if line.startswith("editor_cache"))
+    assert "ready" in line
+    assert "not found" not in line
+
+
 def test_force_invalid_shows_valid_tasks():
     result = runner.invoke(app, ["run", "--force", "nonexistent"])
     assert result.exit_code == 1
