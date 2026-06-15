@@ -103,7 +103,7 @@ A TaskDef with `handler="<name>"` and empty `command` bypasses subprocess buildi
 - **Do not open terminal windows from launchd** — fragile (focus stealing, macOS 13+ permission escalation). Use headless + notification + click-to-act.
 - **Testing**: `Config.load()` calls `get_brew_prefix()` which runs `subprocess.run(["brew", "--prefix"])`. Tests that mock `subprocess.run` or `shutil.which` will capture this call too (shared module objects). Mock `mac_upkeep.config.get_brew_prefix` directly in `init` command tests.
 - **`git_sync` SSH auth under launchd** relies on `~/.ssh/config` `IdentityAgent` (path-based, e.g. 1Password socket). `SSH_AUTH_SOCK` env vars are NOT inherited by LaunchAgents, so env-based agent forwarding won't work here — the `IdentityAgent` directive is the supported path.
-- **`git_sync` forces `GIT_TERMINAL_PROMPT=0` and defaults `GIT_ASKPASS=/usr/bin/true`** (user-set `GIT_ASKPASS` is respected) — fail-fast on auth misconfiguration instead of stalling to the 60 s subprocess timeout.
+- **`git_sync` forces `GIT_TERMINAL_PROMPT=0` and defaults `GIT_ASKPASS=/usr/bin/true`** (user-set `GIT_ASKPASS` is respected) — fail-fast on auth misconfiguration instead of stalling to the 60 s subprocess timeout. A genuine stall (network/server hang) still hits the timeout, so `_run_git` catches `subprocess.TimeoutExpired` and returns a synthetic `CompletedProcess(returncode=124, stderr="timed out after {timeout}s")`. That marks only the affected repo failed and lets the loop continue — a hung pull cannot abort the whole run (which would otherwise skip `output.summary()`/`notify()` and later tasks).
 
 ## Release Process
 

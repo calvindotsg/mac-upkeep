@@ -29,14 +29,23 @@ def _build_env() -> dict[str, str]:
 
 
 def _run_git(path: str, args: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", "-C", path, *args],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        stdin=subprocess.DEVNULL,
-        env=_build_env(),
-    )
+    cmd = ["git", "-C", path, *args]
+    try:
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+            env=_build_env(),
+        )
+    except subprocess.TimeoutExpired:
+        # A hung git call (e.g. network/auth stall on pull) must not abort the
+        # whole run. Return a synthetic failure so _sync_repo marks this repo
+        # failed and continues. 124 mirrors GNU timeout's convention.
+        return subprocess.CompletedProcess(
+            cmd, returncode=124, stdout="", stderr=f"timed out after {timeout}s"
+        )
 
 
 def _resolve_paths(patterns: list[str], output: Output) -> list[str]:
@@ -62,7 +71,12 @@ def _resolve_paths(patterns: list[str], output: Output) -> list[str]:
 
 
 def _sync_repo(path: str, *, skip_dirty: bool) -> tuple[str, str]:
-    """Sync one repo. Returns (status, reason) where status is pulled|up-to-date|skipped|failed."""
+    """Sync one repo. Returns (status, reason) where status is pulled|up-to-date|skipped|failed.
+
+    Only `pull` realistically times out (it's the sole network call); a 124 timeout on
+    the local pre-pull checks below would fall through to their "skipped" branches, which
+    is fine — the run still completes either way thanks to _run_git's TimeoutExpired catch.
+    """
     r = _run_git(path, ["rev-parse", "--is-inside-work-tree"])
     if r.returncode != 0:
         return "skipped", "not a git repo"

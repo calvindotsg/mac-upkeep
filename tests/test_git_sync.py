@@ -277,3 +277,28 @@ def test_failure_surfaces_basename_and_stderr(tmp_path, monkeypatch):
     assert result.status == "failed"
     assert "1 failed: biz" == result.reason
     assert any("Permission denied" in c[0][0] for c in output.task_debug.call_args_list)
+
+
+def test_pull_timeout_does_not_crash_run(tmp_path, monkeypatch):
+    """A hung pull raises TimeoutExpired inside subprocess.run; it must be caught
+    and surfaced as a failed repo rather than aborting the whole run."""
+    p = _make_repo(tmp_path, "biz")
+    config = _config([p])
+    output = MagicMock()
+    # MagicMock raises any exception instance found in side_effect, so the pull
+    # step (last) raises TimeoutExpired exactly where _run_git calls subprocess.run.
+    run_mock = MagicMock(
+        side_effect=[
+            _cp(returncode=0, stdout="true\n"),
+            _cp(returncode=0, stdout="origin\n"),
+            _cp(returncode=0, stdout="main\n"),
+            _cp(returncode=0, stdout="origin/main\n"),
+            _cp(returncode=0, stdout=""),  # clean worktree
+            subprocess.TimeoutExpired(cmd=["git", "pull"], timeout=60),  # pull hangs
+        ]
+    )
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run_mock)
+    result = run_git_sync(config, output, dry_run=False)
+    assert result.status == "failed"
+    assert "1 failed: biz" == result.reason
+    assert any("timed out after 60s" in c[0][0] for c in output.task_debug.call_args_list)

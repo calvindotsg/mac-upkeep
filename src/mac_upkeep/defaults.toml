@@ -22,6 +22,10 @@ description = "Prune pnpm content-addressable store"
 command = "pnpm store prune"
 detect = "pnpm"
 frequency = "monthly"
+# Disabled by default: on pnpm 11 `store prune` corrupts the global virtual
+# store, removing in-use packages (pnpm/pnpm#10132). Re-enable per-machine via
+# `[tasks.pnpm]\nenabled = true` once upstream is fixed.
+enabled = false
 
 [tasks.uv]
 description = "Prune uv package cache"
