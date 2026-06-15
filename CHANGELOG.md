@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.2](https://github.com/calvindotsg/mac-upkeep/compare/v2.4.1...v2.4.2) (2026-06-15)
+
+
+### Bug Fixes
+
+* git_sync timeout resilience + disable broken pnpm store-prune ([#39](https://github.com/calvindotsg/mac-upkeep/issues/39)) ([c9b2665](https://github.com/calvindotsg/mac-upkeep/commit/c9b2665cb9be85d4f49b39aa967ab001473f5b22))
+
 ## [2.4.1](https://github.com/calvindotsg/mac-upkeep/compare/v2.4.0...v2.4.1) (2026-04-22)
 
 
