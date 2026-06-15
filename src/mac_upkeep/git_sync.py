@@ -71,7 +71,12 @@ def _resolve_paths(patterns: list[str], output: Output) -> list[str]:
 
 
 def _sync_repo(path: str, *, skip_dirty: bool) -> tuple[str, str]:
-    """Sync one repo. Returns (status, reason) where status is pulled|up-to-date|skipped|failed."""
+    """Sync one repo. Returns (status, reason) where status is pulled|up-to-date|skipped|failed.
+
+    Only `pull` realistically times out (it's the sole network call); a 124 timeout on
+    the local pre-pull checks below would fall through to their "skipped" branches, which
+    is fine — the run still completes either way thanks to _run_git's TimeoutExpired catch.
+    """
     r = _run_git(path, ["rev-parse", "--is-inside-work-tree"])
     if r.returncode != 0:
         return "skipped", "not a git repo"
