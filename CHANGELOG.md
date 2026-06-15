@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.1](https://github.com/calvindotsg/mac-upkeep/compare/v2.5.0...v2.5.1) (2026-06-15)
+
+
+### Bug Fixes
+
+* show handler tasks as ready in tasks dashboard, not "not found" ([#43](https://github.com/calvindotsg/mac-upkeep/issues/43)) ([788646a](https://github.com/calvindotsg/mac-upkeep/commit/788646aff95bb05f7589227691fd43b736f47ddc))
+
 ## [2.5.0](https://github.com/calvindotsg/mac-upkeep/compare/v2.4.2...v2.5.0) (2026-06-15)
 
 
