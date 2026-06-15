@@ -75,6 +75,15 @@ handler = "git_sync"
 detect = "git"
 frequency = "daily"
 
+[tasks.editor_cache]
+description = "Clear Electron/editor caches when their apps are closed"
+handler = "editor_cache"
+frequency = "monthly"
+# Opt-in: deletes app caches (rm -rf) and ships to all users. Enable per-machine
+# via `[tasks.editor_cache]\nenabled = true`. Targets Notion + Zed by default;
+# override with [[editor_cache.apps]] in your config.
+enabled = false
+
 [run]
 order = [
     "brew_update",
@@ -89,4 +98,5 @@ order = [
     "brew_cleanup",
     "brew_bundle",
     "git_sync",
+    "editor_cache",
 ]

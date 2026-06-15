@@ -527,7 +527,7 @@ def test_handler_dispatch_runs_and_records_state(tmp_path, monkeypatch):
 
     handler, calls = _stub_handler()
     monkeypatch.setitem(HANDLERS, "stub", handler)
-    monkeypatch.setattr("mac_upkeep.tasks.KNOWN_HANDLERS", {"stub", "git_sync"})
+    monkeypatch.setattr("mac_upkeep.tasks.KNOWN_HANDLERS", {"stub", "git_sync", "editor_cache"})
 
     config = Config.load()
     config.task_defs["stub_task"] = TaskDef(
@@ -558,7 +558,7 @@ def test_handler_dispatch_frequency_gate_skips(tmp_path, monkeypatch):
 
     handler, calls = _stub_handler()
     monkeypatch.setitem(HANDLERS, "stub", handler)
-    monkeypatch.setattr("mac_upkeep.tasks.KNOWN_HANDLERS", {"stub", "git_sync"})
+    monkeypatch.setattr("mac_upkeep.tasks.KNOWN_HANDLERS", {"stub", "git_sync", "editor_cache"})
 
     config = Config.load()
     config.task_defs["stub_task"] = TaskDef(
@@ -585,7 +585,7 @@ def test_handler_dispatch_force_filter(tmp_path, monkeypatch):
 
     handler, calls = _stub_handler()
     monkeypatch.setitem(HANDLERS, "stub", handler)
-    monkeypatch.setattr("mac_upkeep.tasks.KNOWN_HANDLERS", {"stub", "git_sync"})
+    monkeypatch.setattr("mac_upkeep.tasks.KNOWN_HANDLERS", {"stub", "git_sync", "editor_cache"})
 
     config = Config.load()
     config.task_defs["stub_task"] = TaskDef(
@@ -611,7 +611,7 @@ def test_handler_dispatch_detect_miss(tmp_path, monkeypatch):
 
     handler, calls = _stub_handler()
     monkeypatch.setitem(HANDLERS, "stub", handler)
-    monkeypatch.setattr("mac_upkeep.tasks.KNOWN_HANDLERS", {"stub", "git_sync"})
+    monkeypatch.setattr("mac_upkeep.tasks.KNOWN_HANDLERS", {"stub", "git_sync", "editor_cache"})
     monkeypatch.setattr("mac_upkeep.tasks.shutil.which", lambda _: None)
 
     config = Config.load()

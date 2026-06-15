@@ -34,7 +34,7 @@ def test_task_def_defaults():
 def test_load_defaults_returns_all_tasks():
     data = _load_defaults()
     assert "tasks" in data
-    assert len(data["tasks"]) == 12
+    assert len(data["tasks"]) == 13
     assert "brew_update" in data["tasks"]
     assert "brew_bundle" in data["tasks"]
 
@@ -44,8 +44,8 @@ def test_load_defaults_has_run_order():
     assert "run" in data
     order = data["run"]["order"]
     assert order[0] == "brew_update"
-    assert order[-1] == "git_sync"
-    assert len(order) == 12
+    assert order[-1] == "editor_cache"
+    assert len(order) == 13
 
 
 # --- load_default_task_names ---
@@ -53,10 +53,10 @@ def test_load_defaults_has_run_order():
 
 def test_load_default_task_names():
     tasks, order = load_default_task_names()
-    assert len(tasks) == 12
+    assert len(tasks) == 13
     assert tasks["brew_update"] == "Update Homebrew package database"
     assert order[0] == "brew_update"
-    assert order[-1] == "git_sync"
+    assert order[-1] == "editor_cache"
 
 
 # --- resolve_variables ---
@@ -93,7 +93,7 @@ def test_resolve_variables_no_vars():
 def test_load_task_defs_defaults_only():
     variables = {"BREW_PREFIX": "/opt/homebrew", "BREWFILE": "", "HOME": "/users/me"}
     task_defs, run_order = load_task_defs(None, variables)
-    assert len(task_defs) == 12
+    assert len(task_defs) == 13
     assert "brew_update" in task_defs
     assert task_defs["brew_update"].command == "brew update"
     assert task_defs["brew_update"].detect == "brew"
@@ -103,7 +103,7 @@ def test_load_task_defs_defaults_only():
     assert task_defs["mo_clean"].command == "/opt/homebrew/bin/mo clean"
     assert task_defs["fisher"].shell == "fish --interactive -c"
     assert run_order[0] == "brew_update"
-    assert run_order[-1] == "git_sync"
+    assert run_order[-1] == "editor_cache"
 
 
 def test_load_task_defs_user_override():
@@ -235,7 +235,7 @@ def test_validation_empty_command():
 def test_validation_command_and_handler_conflict(monkeypatch):
     import pytest
 
-    monkeypatch.setattr("mac_upkeep.tasks.KNOWN_HANDLERS", {"stub", "git_sync"})
+    monkeypatch.setattr("mac_upkeep.tasks.KNOWN_HANDLERS", {"stub", "git_sync", "editor_cache"})
     variables = {"BREW_PREFIX": "/opt/homebrew", "BREWFILE": "", "HOME": "/users/me"}
     user_data = {
         "tasks": {
@@ -253,8 +253,8 @@ def test_validation_command_and_handler_conflict(monkeypatch):
 def test_validation_unknown_handler(monkeypatch):
     import pytest
 
-    # Keep git_sync registered so default task validates; only "nope" is unknown
-    monkeypatch.setattr("mac_upkeep.tasks.KNOWN_HANDLERS", {"git_sync"})
+    # Keep default handlers registered so default tasks validate; only "nope" is unknown
+    monkeypatch.setattr("mac_upkeep.tasks.KNOWN_HANDLERS", {"git_sync", "editor_cache"})
     variables = {"BREW_PREFIX": "/opt/homebrew", "BREWFILE": "", "HOME": "/users/me"}
     user_data = {
         "tasks": {
@@ -270,7 +270,7 @@ def test_validation_unknown_handler(monkeypatch):
 
 
 def test_validation_accepts_handler_with_empty_command(monkeypatch):
-    monkeypatch.setattr("mac_upkeep.tasks.KNOWN_HANDLERS", {"stub", "git_sync"})
+    monkeypatch.setattr("mac_upkeep.tasks.KNOWN_HANDLERS", {"stub", "git_sync", "editor_cache"})
     variables = {"BREW_PREFIX": "/opt/homebrew", "BREWFILE": "", "HOME": "/users/me"}
     user_data = {
         "tasks": {
@@ -346,7 +346,7 @@ def test_custom_task_appended_to_default_order():
     # Custom task appended after all default tasks
     assert "my_task" in run_order
     assert run_order[-1] == "my_task"
-    assert len(run_order) == 13
+    assert len(run_order) == 14
 
 
 def test_custom_task_not_duplicated_with_explicit_order():
@@ -371,10 +371,34 @@ def test_custom_task_not_duplicated_with_explicit_order():
 
 def test_load_nonexistent_config_returns_defaults():
     config = Config.load(Path("/nonexistent/config.toml"))
-    assert len(config.task_defs) == 12
+    assert len(config.task_defs) == 13
     assert config.run_order[0] == "brew_update"
     assert config.is_enabled("brew_update") is True
     assert config.get_frequency("gcloud") == "monthly"
+
+
+def test_load_editor_cache_apps(tmp_path):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        "[[editor_cache.apps]]\n"
+        'name = "Notion"\n'
+        'process = "Notion"\n'
+        "min_size_mb = 0\n"
+        'targets = ["~/Library/Application Support/Notion/X"]\n'
+    )
+    config = Config.load(cfg_path)
+    assert len(config.editor_cache_apps) == 1
+    app = config.editor_cache_apps[0]
+    assert app["name"] == "Notion"
+    assert app["process"] == "Notion"
+    assert app["targets"] == ["~/Library/Application Support/Notion/X"]
+
+
+def test_load_editor_cache_apps_absent_defaults_empty(tmp_path):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text('[tasks.brew_update]\nfrequency = "monthly"\n')
+    config = Config.load(cfg_path)
+    assert config.editor_cache_apps == []
 
 
 def test_config_is_enabled():

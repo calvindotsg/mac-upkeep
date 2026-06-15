@@ -81,6 +81,18 @@ Do not add conditions to the filter or remove the `force_tasks is None` guard fr
 
 A TaskDef with `handler="<name>"` and empty `command` bypasses subprocess building: `run_all_tasks` routes it through `_run_handler`, which applies filter + frequency + `detect` gates then calls `HANDLERS[name](config, output, dry_run)`. Handler modules register themselves in `tasks._register_handlers()` (called at import). `KNOWN_HANDLERS` drives config validation — unknown handler names are rejected early. Handlers emit per-step output via `output.task_debug()` and return one aggregate `TaskResult`.
 
+**Adding a handler is a 3-edit change** (see `editor_cache` as the second exemplar after `git_sync`): the module + `_register_handlers()`/`KNOWN_HANDLERS` line + a `[tasks.<name>]` block (with `handler=`, no `command`) in `defaults.toml` plus its `run.order` entry. **Gotcha:** every new `defaults.toml` task breaks fixtures that hardcode the task count and patched `KNOWN_HANDLERS` sets — grep `tests/` for the old count and `KNOWN_HANDLERS` monkeypatches (memory: "grep test fixtures when adding tasks to defaults.toml").
+
+### editor_cache handler
+
+Reclaims Electron/editor caches mole's classifier structurally misses (`Service Worker`, `node/cache` don't match its `[Cc]ache|[Ll]og|...` regex). Source-validated against `tw93/mole`:
+
+- **Surgical targeting**: clear `Service Worker/CacheStorage` (the bloat), never the parent `Service Worker/` — its `Database/` holds the SW registrations (mole never deletes it).
+- **Running-app guard via `pgrep -x`** (mole's technique; robust under launchd, no TCC/GUI dependency unlike osascript) — deleting a running Electron app's cache can corrupt state, so the app must be closed.
+- **Zed `node/cache` is npm's `--cache`** (`zed-industries/zed` `node_runtime.rs:603`): clearing only re-downloads tarballs on the next LSP install; installed servers keep working. Size-gated (`min_size_mb`, default 2048) to skip pointless re-downloads.
+- **`_is_safe_target`** refuses anything not ≥2 segments below `~/Library/Application Support`, and refuses symlinks — mirrors mole's `validate_path_for_deletion`.
+- Ships **`enabled = false`** (opt-in: it's `rm -rf` and reaches all users, like `pnpm`). Targets default to Notion + Zed; override with `[[editor_cache.apps]]` (`name`/`process`/`min_size_mb`/`targets`) in user config.
+
 ### sudo + HOME
 
 `sudo -n` with full path `$BREW_PREFIX/bin/mo`. Sudoers `env_keep += "HOME"` preserves user's home directory (otherwise `HOME=/var/root` and mole misses user caches). The `sudo` field in `TaskDef` exists instead of embedding `sudo` in the command so that: (a) dry-run can skip sudo, (b) `detect` infers the correct binary, (c) `mac-upkeep setup` can generate sudoers rules.
