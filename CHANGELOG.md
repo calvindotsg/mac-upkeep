@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.1](https://github.com/calvindotsg/mac-upkeep/compare/v3.0.0...v3.0.1) (2026-08-16)
+
+
+### Bug Fixes
+
+* use absolute README links so they resolve on PyPI ([#47](https://github.com/calvindotsg/mac-upkeep/issues/47)) ([03804b3](https://github.com/calvindotsg/mac-upkeep/commit/03804b338c0b3dbb5f2665164cd8305d89be044b))
+
 ## [3.0.0](https://github.com/calvindotsg/mac-upkeep/compare/v2.5.1...v3.0.0) (2026-08-16)
 
 
