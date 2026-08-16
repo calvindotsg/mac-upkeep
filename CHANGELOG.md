@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.2](https://github.com/calvindotsg/mac-upkeep/compare/v3.0.1...v3.0.2) (2026-08-16)
+
+
+### CI/CD
+
+* use client-id instead of the deprecated app-id input ([#49](https://github.com/calvindotsg/mac-upkeep/issues/49)) ([35d9831](https://github.com/calvindotsg/mac-upkeep/commit/35d9831418bdadc3b045dffdce12f1070d556df5))
+
 ## [3.0.1](https://github.com/calvindotsg/mac-upkeep/compare/v3.0.0...v3.0.1) (2026-08-16)
 
 
