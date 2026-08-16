@@ -44,6 +44,10 @@ description = "Clean system and user caches (sudo)"
 command = "${BREW_PREFIX}/bin/mo clean"
 detect = "${BREW_PREFIX}/bin/mo"
 sudo = true
+# Observed successful runs span 146-280s, so the 300s default sat ~7% above the
+# worst case and timed out on roughly a third of runs. 900s leaves real headroom
+# for a cold cache without masking a genuine hang.
+timeout = 900
 
 [tasks.mo_optimize]
 description = "Optimize DNS, Spotlight, fonts, Dock (sudo)"
