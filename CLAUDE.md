@@ -103,9 +103,20 @@ Reclaims Electron/editor caches mole's classifier structurally misses (`Service 
 - **`_is_safe_target`** refuses anything not ≥2 segments below `~/Library/Application Support`, and refuses symlinks — mirrors mole's `validate_path_for_deletion`.
 - Ships **`enabled = false`** (opt-in: it's `rm -rf` and reaches all users, like `pnpm`). Targets default to Notion + Zed; override with `[[editor_cache.apps]]` (`name`/`process`/`min_size_mb`/`targets`) in user config.
 
-### sudo + HOME
+### sudo + HOME/USER/LOGNAME
 
-`sudo -n` with full path `$BREW_PREFIX/bin/mo`. Sudoers `env_keep += "HOME"` preserves user's home directory (otherwise `HOME=/var/root` and mole misses user caches). The `sudo` field in `TaskDef` exists instead of embedding `sudo` in the command so that: (a) dry-run can skip sudo, (b) `detect` infers the correct binary, (c) `mac-upkeep setup` can generate sudoers rules.
+`sudo -n` with full path `$BREW_PREFIX/bin/mo`. Sudoers `env_keep += "HOME USER LOGNAME"`. The `sudo` field in `TaskDef` exists instead of embedding `sudo` in the command so that: (a) dry-run can skip sudo, (b) `detect` infers the correct binary, (c) `mac-upkeep setup` can generate sudoers rules.
+
+**All three variables must be kept together — keeping only `HOME` is worse than keeping none.** `HOME` is preserved so mole sees the user's home rather than `/var/root` (otherwise it misses user caches). But sudo also resets `USER`/`LOGNAME` to `root`, and mole's `needs_permissions_repair()` compares `stat -f %Su "$HOME"` against `$USER`. With `HOME` preserved and `USER` reset, that comparison reads *"owned by calvin, but I am root"* → mole concludes the home directory needs repairing and runs `sudo diskutil resetUserPermissions / $(id -u)` — where `id -u` under sudo is **0**, i.e. it tries to reset the user's home to root's uid. The call fails, which is the only reason this was merely noisy rather than destructive; the failure then made `mo optimize` exit 1 on every run (see [Retry backoff](#retry-backoff) for the downstream storm).
+
+Verify with mole's dry run, which makes no changes:
+
+```bash
+MOLE_DRY_RUN=1 mo optimize | grep -A2 'Permission Repair'              # "already optimal"
+env USER=root MOLE_DRY_RUN=1 mo optimize | grep -A2 'Permission Repair' # enters repair branch
+```
+
+**The sudoers file is not upgraded automatically** — it is installed manually via `mac-upkeep setup | sudo tee /etc/sudoers.d/mac-upkeep`, so existing users keep the old `env_keep` until they reinstall it. `setup` prints an upgrade note for this reason.
 
 ### Brew prefix detection
 
@@ -128,6 +139,7 @@ Reclaims Electron/editor caches mole's classifier structurally misses (`Service 
 - **Config/state paths are import-time constants**, so setting `XDG_CONFIG_HOME` from a fixture is too late — patch `mac_upkeep.config.DEFAULT_CONFIG_PATH`, `mac_upkeep.cli.DEFAULT_CONFIG_PATH`, `tasks._STATE_FILE` and `tasks._RETRY_FILE` objects directly. `Config.load(path=None)` resolves `DEFAULT_CONFIG_PATH` **at call time**; as a default argument it would bind at def time and silently ignore every patch.
 - **`git_sync` SSH auth under launchd** relies on `~/.ssh/config` `IdentityAgent` (path-based, e.g. 1Password socket). `SSH_AUTH_SOCK` env vars are NOT inherited by LaunchAgents, so env-based agent forwarding won't work here — the `IdentityAgent` directive is the supported path.
 - **`git_sync` forces `GIT_TERMINAL_PROMPT=0` and defaults `GIT_ASKPASS=/usr/bin/true`** (user-set `GIT_ASKPASS` is respected) — fail-fast on auth misconfiguration instead of stalling to the 60 s subprocess timeout. A genuine stall (network/server hang) still hits the timeout, so `_run_git` catches `subprocess.TimeoutExpired` and returns a synthetic `CompletedProcess(returncode=124, stderr="timed out after {timeout}s")`. That marks only the affected repo failed and lets the loop continue — a hung pull cannot abort the whole run (which would otherwise skip `output.summary()`/`notify()` and later tasks).
+- **`git_sync` failure reasons belong in the aggregate `TaskResult`, not only `output.task_debug()`** — debug output is suppressed without `--debug`, so the log recorded `13 failed: <names>` with no cause, which is not diagnosable after the fact. `_format_failures()` groups repos by reason because the common case is one shared cause (a network drop failing every repo at once); it caps names per group and truncates long messages so a 16-repo outage cannot blow up the log line or the notification body.
 
 ## Release Process
 
