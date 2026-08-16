@@ -417,7 +417,7 @@ def setup() -> None:
         "# Install: mac-upkeep setup | sudo tee /etc/sudoers.d/mac-upkeep"
         " && sudo chmod 0440 /etc/sudoers.d/mac-upkeep"
     )
-    typer.echo("# Upgrading from < 2.6.0? Reinstall this file -- env_keep gained USER/LOGNAME.")
+    typer.echo("# Upgrading from < 3.0.0? Reinstall this file -- env_keep gained USER/LOGNAME.")
     typer.echo()
     typer.echo(f'Defaults!{mo_bin} env_keep += "HOME USER LOGNAME"')
     typer.echo(f"{user} ALL = (root) NOPASSWD: {mo_bin} clean")
