@@ -212,8 +212,15 @@ class Config:
     editor_cache_apps: list[dict] = field(default_factory=list)
 
     @classmethod
-    def load(cls, path: Path = DEFAULT_CONFIG_PATH) -> Config:
-        """Load config from TOML file, then apply environment variable overrides."""
+    def load(cls, path: Path | None = None) -> Config:
+        """Load config from TOML file, then apply environment variable overrides.
+
+        `path` is resolved at call time (not bound as a default argument) so that
+        patching `mac_upkeep.config.DEFAULT_CONFIG_PATH` actually redirects the
+        lookup -- which is what test isolation relies on.
+        """
+        if path is None:
+            path = DEFAULT_CONFIG_PATH
         config = cls()
 
         # Read user TOML once (used for both settings and task overrides)
