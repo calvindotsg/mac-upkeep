@@ -32,7 +32,7 @@ jobs:
 
       - name: Setup uv
         if: ${{ steps.release.outputs.pr && !steps.release.outputs.release_created }}
-        uses: astral-sh/setup-uv@v10
+        uses: astral-sh/setup-uv@v10.0.1
 
       - name: Update uv.lock in release PR
         if: ${{ steps.release.outputs.pr && !steps.release.outputs.release_created }}
@@ -86,6 +86,6 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.0.1
       - run: uv build
       - uses: pypa/gh-action-pypi-publish@release/v1
