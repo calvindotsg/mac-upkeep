@@ -34,11 +34,19 @@ ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
 _xdg_state = os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state"))
 _STATE_DIR = Path(_xdg_state) / "mac-upkeep"
 _STATE_FILE = _STATE_DIR / "last-run.json"
+# Retry bookkeeping lives beside the success ledger but in its own file: last-run.json
+# stays a plain {task: iso-timestamp} map that the dashboard and format_* helpers read.
+_RETRY_FILE = _STATE_DIR / "retry-state.json"
 FREQUENCY_THRESHOLDS: dict[str, timedelta] = {
     "daily": timedelta(hours=20),
     "weekly": timedelta(days=6),
     "monthly": timedelta(days=27),
 }  # buffer for schedule drift
+
+# Failed tasks back off 1h, 2h, 4h, ... capped at their own frequency threshold.
+# Without this a permanently-failing task re-runs on every invocation (RunAtLoad,
+# manual runs, launchd), because only successes record a timestamp.
+_BACKOFF_BASE = timedelta(hours=1)
 
 # Handler registry: task handler name → (config, output, dry_run) -> TaskResult.
 # Tasks set handler="<name>" in defaults.toml to dispatch here instead of running a command.
@@ -74,8 +82,90 @@ def _save_state(state: dict[str, str]) -> None:
     _STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
+def _load_retry_state() -> dict[str, dict]:
+    """Load per-task failure bookkeeping. Empty dict on missing/corrupt file."""
+    try:
+        data = json.loads(_RETRY_FILE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_retry_state(state: dict[str, dict]) -> None:
+    _STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _RETRY_FILE.write_text(json.dumps(state, indent=2))
+
+
+def _record_failure(task_key: str) -> None:
+    """Increment the consecutive-failure count and stamp the attempt time."""
+    state = _load_retry_state()
+    entry = state.get(task_key) or {}
+    failures = entry.get("failures", 0)
+    if not isinstance(failures, int) or failures < 0:
+        failures = 0
+    state[task_key] = {
+        "failures": failures + 1,
+        "last_attempt": datetime.now().isoformat(timespec="seconds"),
+    }
+    _save_retry_state(state)
+
+
+def _clear_failure(task_key: str) -> None:
+    """Drop a task's backoff record after a success."""
+    state = _load_retry_state()
+    if state.pop(task_key, None) is not None:
+        _save_retry_state(state)
+
+
+def _backoff_until(
+    task_key: str, config: Config, retry: dict[str, dict] | None = None
+) -> datetime | None:
+    """When this task may next be retried, or None if it is not backing off.
+
+    Delay doubles per consecutive failure but never exceeds the task's own
+    frequency threshold, so a permanently-failing weekly task settles at weekly
+    instead of retrying on every invocation.
+    """
+    if retry is None:
+        retry = _load_retry_state()
+    entry = retry.get(task_key)
+    if not isinstance(entry, dict):
+        return None
+    failures = entry.get("failures", 0)
+    if not isinstance(failures, int) or failures < 1:
+        return None
+    try:
+        last_attempt = datetime.fromisoformat(entry["last_attempt"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    threshold = FREQUENCY_THRESHOLDS.get(config.get_frequency(task_key), timedelta(days=6))
+    # 2**failures grows unboundedly; cap the exponent before it overflows timedelta.
+    delay = min(_BACKOFF_BASE * (2 ** min(failures - 1, 20)), threshold)
+    due = last_attempt + delay
+    return due if due > datetime.now() else None
+
+
+def _skip_reason(task_key: str, config: Config) -> str | None:
+    """Why this task is not eligible right now, or None if it should run.
+
+    Distinguishes retry backoff from ordinary frequency skips so the log does not
+    report a task that keeps failing as having "ran recently".
+    """
+    if _should_run(task_key, config):
+        return None
+    retry = _load_retry_state()
+    if _backoff_until(task_key, config, retry) is not None:
+        failures = retry[task_key]["failures"]
+        plural = "" if failures == 1 else "s"
+        next_str = format_next_run(task_key, config, retry=retry)
+        return f"retry backoff after {failures} failure{plural}, next {next_str}"
+    return f"ran recently, next {format_next_run(task_key, config)}"
+
+
 def _should_run(task_key: str, config: Config) -> bool:
     """Check if enough time has elapsed since last run for this task's frequency."""
+    if _backoff_until(task_key, config) is not None:
+        return False
     state = _load_state()
     last_run_str = state.get(task_key)
     if not last_run_str:
@@ -119,20 +209,8 @@ def format_last_run(last_run_str: str | None) -> str:
     return f"{days} days ago"
 
 
-def format_next_run(task_key: str, config: Config, state: dict[str, str] | None = None) -> str:
-    """Return relative time until task is next eligible: 'now', 'in Xh', 'in N days'."""
-    if state is None:
-        state = _load_state()
-    last_run_str = state.get(task_key)
-    if not last_run_str:
-        return "now"
-    try:
-        last_run = datetime.fromisoformat(last_run_str)
-    except ValueError:
-        return "now"
-    frequency = config.get_frequency(task_key)
-    threshold = FREQUENCY_THRESHOLDS.get(frequency, timedelta(days=6))
-    remaining = threshold - (datetime.now() - last_run)
+def _format_remaining(remaining: timedelta) -> str:
+    """Humanize a positive timedelta as 'in <1h' / 'in Xh' / 'in N days'."""
     if remaining <= timedelta(0):
         return "now"
     if remaining < timedelta(days=1):
@@ -142,10 +220,48 @@ def format_next_run(task_key: str, config: Config, state: dict[str, str] | None 
         if hours == 1:
             return "in 1 hour"
         return f"in {hours}h"
-    remaining_days = threshold.days - (datetime.now() - last_run).days
-    if remaining_days == 1:
+    # Ceiling division: matches the original "threshold.days - elapsed.days"
+    # arithmetic, where a 25d23h59m remainder reads as "in 26 days".
+    days = -(-remaining // timedelta(days=1))
+    if days == 1:
         return "in 1 day"
-    return f"in {remaining_days} days"
+    return f"in {days} days"
+
+
+def format_next_run(
+    task_key: str,
+    config: Config,
+    state: dict[str, str] | None = None,
+    retry: dict[str, dict] | None = None,
+) -> str:
+    """Return relative time until task is next eligible: 'now', 'in Xh', 'in N days'.
+
+    A task in retry backoff is not eligible even if its frequency has elapsed,
+    so the later of the two due times wins.
+    """
+    if state is None:
+        state = _load_state()
+
+    backoff_due = _backoff_until(task_key, config, retry)
+
+    last_run_str = state.get(task_key)
+    frequency_due: datetime | None = None
+    if last_run_str:
+        try:
+            last_run = datetime.fromisoformat(last_run_str)
+        except ValueError:
+            frequency_due = None
+        else:
+            threshold = FREQUENCY_THRESHOLDS.get(config.get_frequency(task_key), timedelta(days=6))
+            frequency_due = last_run + threshold
+
+    due = max((d for d in (backoff_due, frequency_due) if d is not None), default=None)
+    if due is None:
+        return "now"
+    now = datetime.now()
+    if due <= now:
+        return "now"
+    return _format_remaining(due - now)
 
 
 def strip_ansi(text: str) -> str:
@@ -251,12 +367,13 @@ def _run(
         output.task_done(result)
         return result
 
-    # Frequency: skip if ran recently (no --force = frequency applies)
-    if not dry_run and force_tasks is None and not _should_run(task_key, config):
-        next_str = format_next_run(task_key, config)
-        result = TaskResult(name, "skipped", reason=f"ran recently, next {next_str}")
-        output.task_done(result)
-        return result
+    # Frequency: skip if ran recently or backing off (no --force = frequency applies)
+    if not dry_run and force_tasks is None:
+        reason = _skip_reason(task_key, config)
+        if reason:
+            result = TaskResult(name, "skipped", reason=reason)
+            output.task_done(result)
+            return result
 
     detect_cmd = detect or cmd[0]
     will_run = config.is_enabled(task_key) and shutil.which(detect_cmd) is not None
@@ -276,6 +393,9 @@ def _run(
     # Record timestamp on success (not dry-run)
     if result.status == "ok" and result.reason != "dry-run":
         _update_last_run(task_key)
+        _clear_failure(task_key)
+    elif result.status == "failed" and not dry_run:
+        _record_failure(task_key)
 
     return result
 
@@ -297,11 +417,12 @@ def _run_handler(
         output.task_done(result)
         return result
 
-    if not dry_run and force_tasks is None and not _should_run(task_key, config):
-        next_str = format_next_run(task_key, config)
-        result = TaskResult(name, "skipped", reason=f"ran recently, next {next_str}")
-        output.task_done(result)
-        return result
+    if not dry_run and force_tasks is None:
+        reason = _skip_reason(task_key, config)
+        if reason:
+            result = TaskResult(name, "skipped", reason=reason)
+            output.task_done(result)
+            return result
 
     if not config.is_enabled(task_key):
         result = TaskResult(name, "skipped", reason="disabled")
@@ -327,6 +448,9 @@ def _run_handler(
 
     if result.status == "ok" and not dry_run:
         _update_last_run(task_key)
+        _clear_failure(task_key)
+    elif result.status == "failed" and not dry_run:
+        _record_failure(task_key)
 
     return result
 

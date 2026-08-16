@@ -401,7 +401,12 @@ def setup() -> None:
         sudo chmod 0440 /etc/sudoers.d/mac-upkeep
 
     The env_keep line preserves HOME so mole operates on your home directory,
-    not /var/root (which is the default when running via sudo).
+    not /var/root (which is the default when running via sudo). USER and LOGNAME
+    are preserved alongside it: sudo resets them to root, and mole compares
+    $HOME's owner against $USER to decide whether the home directory needs a
+    permissions repair. Preserving HOME alone makes that comparison read
+    "owned by calvin, but I am root", so mole tries to repair permissions that
+    are already correct.
     """
     user = getpass.getuser()
     brew_prefix = get_brew_prefix()
@@ -412,8 +417,9 @@ def setup() -> None:
         "# Install: mac-upkeep setup | sudo tee /etc/sudoers.d/mac-upkeep"
         " && sudo chmod 0440 /etc/sudoers.d/mac-upkeep"
     )
+    typer.echo("# Upgrading from < 3.0.0? Reinstall this file -- env_keep gained USER/LOGNAME.")
     typer.echo()
-    typer.echo(f'Defaults!{mo_bin} env_keep += "HOME"')
+    typer.echo(f'Defaults!{mo_bin} env_keep += "HOME USER LOGNAME"')
     typer.echo(f"{user} ALL = (root) NOPASSWD: {mo_bin} clean")
     typer.echo(f"{user} ALL = (root) NOPASSWD: {mo_bin} optimize")
     typer.echo()

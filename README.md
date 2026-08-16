@@ -153,9 +153,20 @@ MAC_UPKEEP_GCLOUD_FREQUENCY=monthly mac-upkeep run  # Override frequency
 `mo_clean` and `mo_optimize` require passwordless sudo for the `mo` binary:
 
 ```bash
-mac-upkeep setup | sudo tee /etc/sudoers.d/mac-upkeep && sudo chmod 0440 /etc/sudoers.d/mac-upkeep
-sudo visudo -c
+mac-upkeep setup > /tmp/mac-upkeep.sudoers
+sudo visudo -cf /tmp/mac-upkeep.sudoers    # must print "parsed OK" before installing
+sudo install -m 0440 -o root -g wheel /tmp/mac-upkeep.sudoers /etc/sudoers.d/mac-upkeep
 ```
+
+Validate before installing — a malformed file in `/etc/sudoers.d/` can lock you out of `sudo`.
+
+> **⚠ Upgrading from < 3.0.0 — action required**
+>
+> The sudoers file is installed manually, so `brew upgrade` does **not** update it. Reinstall it using the commands above.
+>
+> Releases before 3.0.0 generated `env_keep += "HOME"`. Sudo preserves `HOME` but still resets `USER` to `root`, and [mole](https://github.com/tw93/mole) compares `$HOME`'s owner against `$USER` to decide whether your home directory needs a permissions repair. The mismatch makes it run `diskutil resetUserPermissions / $(id -u)` — and under sudo `id -u` is `0`, so it attempts to reset your home directory to root's uid. The call fails, which is the only reason this is noisy rather than destructive, but it also makes `mo optimize` exit non-zero on every run.
+>
+> 3.0.0 generates `env_keep += "HOME USER LOGNAME"`. Verify with `sudo -n $(brew --prefix)/bin/mo optimize </dev/null >/dev/null; echo $?` — it should print `0`.
 
 ## Contributing
 

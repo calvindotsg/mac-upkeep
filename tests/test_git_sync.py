@@ -7,7 +7,7 @@ import subprocess
 from unittest.mock import MagicMock
 
 from mac_upkeep.config import Config
-from mac_upkeep.git_sync import _resolve_paths, run_git_sync
+from mac_upkeep.git_sync import _format_failures, _resolve_paths, run_git_sync
 
 
 def _cp(returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess:
@@ -275,7 +275,8 @@ def test_failure_surfaces_basename_and_stderr(tmp_path, monkeypatch):
     monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", lambda *a, **k: next(calls))
     result = run_git_sync(config, output, dry_run=False)
     assert result.status == "failed"
-    assert "1 failed: biz" == result.reason
+    # The cause must reach the aggregate reason, not just --debug output.
+    assert result.reason == "1 failed: biz (ssh: Permission denied (publickey))"
     assert any("Permission denied" in c[0][0] for c in output.task_debug.call_args_list)
 
 
@@ -300,5 +301,56 @@ def test_pull_timeout_does_not_crash_run(tmp_path, monkeypatch):
     monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run_mock)
     result = run_git_sync(config, output, dry_run=False)
     assert result.status == "failed"
-    assert "1 failed: biz" == result.reason
+    assert result.reason == "1 failed: biz (timed out after 60s)"
     assert any("timed out after 60s" in c[0][0] for c in output.task_debug.call_args_list)
+
+
+# --- failure reporting (regression: causes were only visible under --debug) ---
+
+
+def test_format_failures_groups_shared_cause():
+    """A network drop fails every repo with the same message; report it once."""
+    failures = [(f"repo{i}", "could not read from remote repository") for i in range(13)]
+    assert _format_failures(failures) == (
+        "repo0, repo1, repo2, +10 more (could not read from remote repository)"
+    )
+
+
+def test_format_failures_keeps_distinct_causes_separate():
+    out = _format_failures([("biz", "timed out after 60s"), ("ops", "Permission denied")])
+    assert out == "biz (timed out after 60s); ops (Permission denied)"
+
+
+def test_format_failures_truncates_long_reason():
+    out = _format_failures([("biz", "x" * 200)])
+    assert out.endswith("…)")
+    assert len(out) < 120
+
+
+def test_format_failures_handles_empty_reason():
+    assert _format_failures([("biz", "")]) == "biz (unknown error)"
+
+
+def test_multiple_repos_share_one_reason_in_result(tmp_path, monkeypatch):
+    """End-to-end: the aggregate TaskResult carries the cause, not just names."""
+    repos = [_make_repo(tmp_path, n) for n in ("biz", "ops")]
+    config = _config(repos)
+    output = MagicMock()
+
+    def fake_run(cmd, **kwargs):
+        if "pull" in cmd:
+            return _cp(returncode=1, stderr="fatal: unable to access: network is down\n")
+        if "rev-parse" in cmd and "--is-inside-work-tree" in cmd:
+            return _cp(returncode=0, stdout="true\n")
+        if cmd[-1] == "remote":
+            return _cp(returncode=0, stdout="origin\n")
+        if "--symbolic-full-name" in cmd:
+            return _cp(returncode=0, stdout="origin/main\n")
+        if "status" in cmd:
+            return _cp(returncode=0, stdout="")
+        return _cp(returncode=0, stdout="main\n")
+
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", fake_run)
+    result = run_git_sync(config, output, dry_run=False)
+    assert result.status == "failed"
+    assert result.reason == "2 failed: biz, ops (fatal: unable to access: network is down)"

@@ -40,6 +40,20 @@ def test_setup_outputs_sudoers():
     assert "mo optimize" in result.output
 
 
+def test_setup_env_keep_preserves_user_and_logname():
+    """Regression: sudo resets USER/LOGNAME to root while env_keep kept HOME.
+
+    mole compares $HOME's owner against $USER to decide whether the home
+    directory needs a permissions repair. With HOME preserved but USER=root,
+    that reads "owned by calvin, but I am root", so mole attempted
+    `diskutil resetUserPermissions / 0` -- passing root's uid -- which failed
+    and made `mo optimize` exit 1 on every single run.
+    """
+    result = runner.invoke(app, ["setup"])
+    assert result.exit_code == 0
+    assert 'env_keep += "HOME USER LOGNAME"' in result.output
+
+
 def test_run_dry_run():
     result = runner.invoke(app, ["run", "--dry-run"])
     assert result.exit_code == 0
