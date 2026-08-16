@@ -108,6 +108,35 @@ def _sync_repo(path: str, *, skip_dirty: bool) -> tuple[str, str]:
     return "pulled", ""
 
 
+_MAX_NAMES_PER_REASON = 3
+_MAX_REASON_LEN = 80
+
+
+def _format_failures(failures: list[tuple[str, str]]) -> str:
+    """Summarise failed repos grouped by reason.
+
+    Per-repo reasons previously reached only `output.task_debug()`, which is
+    suppressed without `--debug` -- so the log recorded "13 failed: <names>"
+    with no cause, which is not actionable after the fact. Grouping matters
+    because the common case is one shared cause (a network drop failing every
+    repo at once), which would otherwise repeat the same message 13 times.
+    """
+    grouped: dict[str, list[str]] = {}
+    for name, reason in failures:
+        text = reason.strip() or "unknown error"
+        if len(text) > _MAX_REASON_LEN:
+            text = text[: _MAX_REASON_LEN - 1].rstrip() + "…"
+        grouped.setdefault(text, []).append(name)
+
+    parts = []
+    for reason, names in grouped.items():
+        shown = ", ".join(names[:_MAX_NAMES_PER_REASON])
+        if len(names) > _MAX_NAMES_PER_REASON:
+            shown = f"{shown}, +{len(names) - _MAX_NAMES_PER_REASON} more"
+        parts.append(f"{shown} ({reason})")
+    return "; ".join(parts)
+
+
 def run_git_sync(config: Config, output: Output, dry_run: bool) -> TaskResult:
     """Handler entry point. Aggregate per-repo results into a single TaskResult."""
     patterns = list(config.git_sync_repos)
@@ -125,7 +154,7 @@ def run_git_sync(config: Config, output: Output, dry_run: bool) -> TaskResult:
 
     n_pulled = 0
     n_skipped = 0
-    failures: list[str] = []
+    failures: list[tuple[str, str]] = []
     for path in paths:
         status, reason = _sync_repo(path, skip_dirty=config.git_sync_skip_dirty)
         display = f"{path}: {status}"
@@ -137,11 +166,12 @@ def run_git_sync(config: Config, output: Output, dry_run: bool) -> TaskResult:
         elif status == "skipped":
             n_skipped += 1
         else:
-            failures.append(os.path.basename(path.rstrip("/")))
+            failures.append((os.path.basename(path.rstrip("/")), reason))
 
     if failures:
-        names = ", ".join(failures)
-        return TaskResult("git_sync", "failed", reason=f"{len(failures)} failed: {names}")
+        return TaskResult(
+            "git_sync", "failed", reason=f"{len(failures)} failed: {_format_failures(failures)}"
+        )
 
     parts = []
     if n_pulled:
