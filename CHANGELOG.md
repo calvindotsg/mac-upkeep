@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.0.0](https://github.com/calvindotsg/mac-upkeep/compare/v2.5.1...v3.0.0) (2026-08-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* existing installs must reinstall /etc/sudoers.d/mac-upkeep. The sudoers file is installed manually, so `brew upgrade` never updates it. Releases before 3.0.0 generated `env_keep += "HOME"`, which leaves USER set to root while HOME points at the user's home, causing mole to run `diskutil resetUserPermissions / 0` once a week. Reinstall with: `mac-upkeep setup > /tmp/s && sudo visudo -cf /tmp/s && sudo install -m 0440 -o root -g wheel /tmp/s /etc/sudoers.d/mac-upkeep`
+
+### Bug Fixes
+
+* maintenance audit — sudoers env_keep, retry backoff, test isolation ([#45](https://github.com/calvindotsg/mac-upkeep/issues/45)) ([1121584](https://github.com/calvindotsg/mac-upkeep/commit/1121584ee5ed550b629fc60566da71c73764e124))
+
 ## [2.5.1](https://github.com/calvindotsg/mac-upkeep/compare/v2.5.0...v2.5.1) (2026-06-15)
 
 
