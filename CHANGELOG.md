@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.3](https://github.com/calvindotsg/mac-upkeep/compare/v3.0.2...v3.0.3) (2026-08-17)
+
+
+### Bug Fixes
+
+* report handler tasks as dry-run instead of as having executed ([#51](https://github.com/calvindotsg/mac-upkeep/issues/51)) ([1db8054](https://github.com/calvindotsg/mac-upkeep/commit/1db8054d65da313f6fe4d51f00932d126fc59c79))
+
 ## [3.0.2](https://github.com/calvindotsg/mac-upkeep/compare/v3.0.1...v3.0.2) (2026-08-16)
 
 
