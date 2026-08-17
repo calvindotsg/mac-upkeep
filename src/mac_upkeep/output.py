@@ -97,9 +97,9 @@ class Output:
             if t.status == "running":
                 icon = Spinner("dots", style="yellow")
                 detail = Text("running", style="yellow")
-            elif t.status == "ok" and t.reason == "dry-run":
+            elif t.status == "ok" and t.reason.startswith("dry-run"):
                 icon = Text(_DRY, style="cyan")
-                detail = Text("dry-run", style="dim")
+                detail = Text(t.reason, style="dim")
             elif t.status == "ok":
                 icon = Text(_OK, style="green")
                 detail = Text(f"{t.duration:.1f}s", style="dim") if t.duration else Text("")
@@ -138,8 +138,15 @@ class Output:
         else:
             if result.status == "skipped":
                 logger.info("SKIP: %s (%s)", result.name, result.reason)
-            elif result.status == "ok" and result.reason == "dry-run":
-                logger.info("DRY-RUN: would run %s", result.name)
+            elif result.status == "ok" and result.reason.startswith("dry-run"):
+                # Handlers return a richer reason ("dry-run: 17 repos"); command
+                # tasks return the bare "dry-run". Surface the extra detail when
+                # there is any, so a handler preview is not reduced to a stub.
+                detail = result.reason[len("dry-run") :].lstrip(": ")
+                if detail:
+                    logger.info("DRY-RUN: would run %s (%s)", result.name, detail)
+                else:
+                    logger.info("DRY-RUN: would run %s", result.name)
             elif result.status == "ok":
                 logger.info("Running %s... done", result.name)
             elif result.status == "failed":

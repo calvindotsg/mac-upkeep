@@ -69,6 +69,49 @@ def test_output_non_interactive_task_done_dry_run(caplog):
     assert "DRY-RUN" in caplog.text
 
 
+def test_output_non_interactive_task_done_dry_run_handler_reason(caplog):
+    """Handler tasks return 'dry-run: <detail>', not the bare 'dry-run'.
+
+    An exact-equality check fell through to the 'Running X... done' branch, so a
+    dry run reported handler tasks as if they had executed.
+    """
+    import logging
+
+    output = _non_interactive()
+    result = TaskResult("git_sync", "ok", reason="dry-run: 17 repos")
+    with caplog.at_level(logging.INFO, logger="mac_upkeep"):
+        output.task_done(result)
+    assert "DRY-RUN: would run git_sync (17 repos)" in caplog.text
+    assert "done" not in caplog.text
+
+
+def test_output_non_interactive_task_done_dry_run_bare_has_no_empty_detail(caplog):
+    """The bare 'dry-run' reason must not render an empty '()' suffix."""
+    import logging
+
+    output = _non_interactive()
+    result = TaskResult("gcloud", "ok", reason="dry-run")
+    with caplog.at_level(logging.INFO, logger="mac_upkeep"):
+        output.task_done(result)
+    assert "DRY-RUN: would run gcloud" in caplog.text
+    assert "()" not in caplog.text
+
+
+def test_output_non_interactive_ok_reason_is_not_treated_as_dry_run(caplog):
+    """A successful handler reason must still read as a real run.
+
+    Guards the prefix check against over-matching: only 'dry-run...' is a preview.
+    """
+    import logging
+
+    output = _non_interactive()
+    result = TaskResult("editor_cache", "ok", reason="nothing to clean")
+    with caplog.at_level(logging.INFO, logger="mac_upkeep"):
+        output.task_done(result)
+    assert "Running editor_cache... done" in caplog.text
+    assert "DRY-RUN" not in caplog.text
+
+
 def test_output_non_interactive_task_done_skipped(caplog):
     import logging
 
