@@ -39,21 +39,38 @@ command = "fisher update"
 detect = "fish"
 shell = "fish --interactive -c"
 
+# Runs as the invoking user, NOT root. mole is designed to elevate the individual
+# operations that need it, and running the whole tool as root is outside mole's
+# stated threat model: with `env_keep HOME` it let anything running as the user
+# steer root-privileged touch/chown/rm through paths inside $HOME.
+#
+# Non-interactively (stdin closed) `mo clean` reaches bin/clean.sh's else-branch,
+# which calls adopt_sudo_session -> `sudo -n -v`. The -n means it NEVER prompts:
+# with no sudo ticket it simply sets SYSTEM_CLEAN=false, skips system-level
+# cleanup and carries on cleaning user caches. Measured cost of losing the
+# privileged half: ~7MB/week of files in /private/var/log.
 [tasks.mo_clean]
-description = "Clean system and user caches (sudo)"
+description = "Clean user caches"
 command = "${BREW_PREFIX}/bin/mo clean"
 detect = "${BREW_PREFIX}/bin/mo"
-sudo = true
 # Observed successful runs span 146-280s, so the 300s default sat ~7% above the
 # worst case and timed out on roughly a third of runs. 900s leaves real headroom
 # for a cold cache without masking a genuine hang.
 timeout = 900
 
+# Disabled by default, and NOT merely de-sudoed. bin/optimize.sh calls
+# ensure_sudo_session unconditionally whenever MOLE_DRY_RUN != 1, with no
+# non-interactive guard -- so under launchd, where there is no controlling
+# terminal, request_sudo_access takes its is_gui_mode branch and puts up an
+# osascript password dialog that would sit on screen until the task times out.
+# Unprivileged it would also achieve almost nothing: DNS flush, font database
+# reset, route/ARP flush, Spotlight reindex and disk permissions are all
+# root-only. Run `mo optimize` by hand when you want it.
 [tasks.mo_optimize]
-description = "Optimize DNS, Spotlight, fonts, Dock (sudo)"
+description = "Optimize DNS, Spotlight, fonts, Dock (run by hand)"
 command = "${BREW_PREFIX}/bin/mo optimize"
 detect = "${BREW_PREFIX}/bin/mo"
-sudo = true
+enabled = false
 
 [tasks.mo_purge]
 description = "Remove old project artifacts"

@@ -34,8 +34,8 @@ uvx mac-upkeep run            # one-off without installing
 | `pnpm` | Prune pnpm content-addressable store | Monthly |
 | `uv` | Prune uv package cache | Monthly |
 | `fisher` | Update Fish shell plugins | Weekly |
-| `mo_clean` | Clean system and user caches ([Mole](https://github.com/tw93/Mole)) | Weekly |
-| `mo_optimize` | Optimize DNS, Spotlight, fonts, Dock ([Mole](https://github.com/tw93/Mole)) | Weekly |
+| `mo_clean` | Clean user caches ([Mole](https://github.com/tw93/Mole)) | Weekly |
+| `mo_optimize` | Optimize DNS, Spotlight, fonts, Dock ([Mole](https://github.com/tw93/Mole)) | Off by default |
 | `mo_purge` | Remove old project artifacts ([Mole](https://github.com/tw93/Mole)) | Monthly |
 | `brew_cleanup` | Remove old versions and cache files | Monthly |
 | `brew_bundle` | Remove packages not in Brewfile | Weekly |
@@ -59,7 +59,7 @@ mac-upkeep tasks                     # List tasks with status and next run
 mac-upkeep init                      # Generate config (detects your tools)
 mac-upkeep show-config --default     # Show all available task options
 mac-upkeep show-config               # Show your config overrides
-mac-upkeep setup                     # Print sudoers rules
+mac-upkeep setup                     # Print log-rotation config
 mac-upkeep status                    # Show scheduling dashboard
 mac-upkeep logs                      # View last 20 log lines
 mac-upkeep logs -f                   # Follow logs
@@ -196,25 +196,44 @@ MAC_UPKEEP_GCLOUD_FREQUENCY=monthly mac-upkeep run  # Override frequency
 and the empty string, which previously all *enabled* the task by falling through a
 denylist of `false`/`0`/`no`.
 
-### Sudoers
+### Why there is no sudoers file
 
-`mo_clean` and `mo_optimize` require passwordless sudo for the `mo` binary:
+**mac-upkeep runs every task as you.** Nothing it ships needs root.
+
+Releases before 4.0.0 ran `mo clean` and `mo optimize` under `sudo -n` and told you to
+install a NOPASSWD rule naming `$(brew --prefix)/bin/mo`. That path is a bash script inside
+a **user-writable** Homebrew prefix which transitively sources around thirty more user-owned
+`.sh` files — so any code already running as you could rewrite what root would execute, and
+then just wait for the weekly LaunchAgent run. A `sha256` `Digest_Spec` does not fix it: the
+digest covers the one entry script, and `sudoers(5)` documents digests as TOCTOU-racy when
+the command's directory is user-writable.
+
+> **⚠ Upgrading from < 4.0.0 — action required**
+>
+> The sudoers file was installed manually, so `brew upgrade` does **not** remove it. Delete it:
+>
+> ```bash
+> sudo rm -f /etc/sudoers.d/mac-upkeep
+> sudo visudo -c                       # must print "parsed OK"
+> ```
+
+**What changes in practice.** `mo clean` still runs weekly and still clears your user caches;
+non-interactively it probes for an existing sudo ticket with `sudo -n -v`, which never
+prompts, and simply skips the system-level half when there is none. The measured cost of
+losing that half is about 7 MB per week of files under `/private/var/log`.
+
+`mo optimize` is now **off by default** rather than merely unprivileged. Its work — DNS
+flush, font database reset, route/ARP flush, Spotlight reindex, disk permissions — is
+root-only, and `bin/optimize.sh` asks for admin access unconditionally with no
+non-interactive guard, so under launchd it would raise a macOS password dialog that sits on
+screen until the task times out. Run it by hand when you want it:
 
 ```bash
-mac-upkeep setup > /tmp/mac-upkeep.sudoers
-sudo visudo -cf /tmp/mac-upkeep.sudoers    # must print "parsed OK" before installing
-sudo install -m 0440 -o root -g wheel /tmp/mac-upkeep.sudoers /etc/sudoers.d/mac-upkeep
+mo optimize
 ```
 
-Validate before installing — a malformed file in `/etc/sudoers.d/` can lock you out of `sudo`.
-
-> **⚠ Upgrading from < 3.0.0 — action required**
->
-> The sudoers file is installed manually, so `brew upgrade` does **not** update it. Reinstall it using the commands above.
->
-> Releases before 3.0.0 generated `env_keep += "HOME"`. Sudo preserves `HOME` but still resets `USER` to `root`, and [mole](https://github.com/tw93/mole) compares `$HOME`'s owner against `$USER` to decide whether your home directory needs a permissions repair. The mismatch makes it run `diskutil resetUserPermissions / $(id -u)` — and under sudo `id -u` is `0`, so it attempts to reset your home directory to root's uid. The call fails, which is the only reason this is noisy rather than destructive, but it also makes `mo optimize` exit non-zero on every run.
->
-> 3.0.0 generates `env_keep += "HOME USER LOGNAME"`. Verify with `sudo -n $(brew --prefix)/bin/mo optimize </dev/null >/dev/null; echo $?` — it should print `0`.
+Re-enable it for interactive use if you prefer, with `[tasks.mo_optimize]` / `enabled = true`
+in your config — but understand it will prompt.
 
 ### Log file permissions
 
@@ -224,8 +243,8 @@ employer-internal repositories, and `$(brew --prefix)/var/log` is world-traversa
 `~/Library`, nothing else gates it. Owner plus the `admin` group keeps `mac-upkeep logs`
 working.
 
-> **⚠ Already installed?** Like the sudoers file, `/etc/newsyslog.d/mac-upkeep.conf` is
-> **not** upgraded by `brew upgrade`, and existing log files keep their 644 mode. Rewrite
+> **⚠ Already installed?** `/etc/newsyslog.d/mac-upkeep.conf` is installed manually, so it is
+> **not** upgraded by `brew upgrade` either, and existing log files keep their 644 mode. Rewrite
 > the conf from `mac-upkeep setup`, then:
 >
 > ```bash
