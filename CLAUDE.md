@@ -406,6 +406,41 @@ Automated via release-please + homebrew-tap dispatch:
 4. Merge the release PR → GitHub release + tag created → `bump-tap` dispatches to homebrew-tap, `pypi-publish` publishes to PyPI
 5. Verify: check homebrew-tap Actions tab for successful formula update
 
+### Triaging a release PR: close AND snooze
+
+A release PR whose entries are all `ci:`/`chore:` is closed, not merged. `uv.lock` is a
+development lockfile and is not shipped in the wheel, `[dependency-groups] dev` is never
+installed by users, and if `src/` is untouched the published artifact would differ from
+its predecessor only in its version string -- which PyPI then makes permanent, since it
+never permits version reuse. Confirm it with `git diff <last-tag>..main` rather than
+inferring it from the commit types.
+
+Closing it **bare is wrong**: release-please matches an existing release PR by head branch,
+so the next push to `main` opens an identical one. Add the **`autorelease: snooze`** label
+first. `Manifest.findSnoozedReleasePullRequests` (release-please `src/manifest.ts`) scans
+CLOSED pull requests for that label, and `maybeUpdateSnoozedPullRequest` leaves the PR alone
+while the release notes are unchanged; when a real `feat:`/`fix:` lands the notes change, so
+release-please reopens the PR and removes the label itself. The deferred entries roll into
+the next real release rather than being lost. Note that `docs:` is a changelog section here,
+so documenting the close is itself enough to reopen it.
+
+Never delete `release-please--branches--main` -- the snooze match is on that branch name.
+
+### The formula's dependency pins do not come from `uv.lock`
+
+`uv.lock` records what CI and contributors resolve. The **formula** decides what Homebrew
+users actually get, and the tap regenerates it with `brew update-python-resources` at bump
+time, resolving `typer>=0.12` against PyPI afresh. The two drift, and the formula is the
+half that reaches users: the v4.0.1 re-bump moved the tap to typer 0.27.1 while CI was
+still testing 0.24.1. So "a `chore(deps)` lock bump is not user-facing" is true, but
+"`uv.lock` did not change" is **not** evidence that users' dependencies did not.
+
+typer >= 0.26 **vendors Click**, so `resource "click"` legitimately disappears from the
+formula -- not a regression, and nothing in `src/` imports click. typer 0.27.0's "metavar
+printing" break is cosmetic here (`--force -f TEXT` becomes `<str>`); no test or doc
+asserts it. `--show-completion` reporting `Shell not supported` under a non-TTY subprocess
+predates it -- reproduced against 0.24.1 as a control before blaming the bump.
+
 ## Reusable Patterns
 
 This repo serves as a reference for Python CLI projects using Typer + UV. See [docs/reusable-patterns.md](docs/reusable-patterns.md) for copy-ready workflows, configs, and adaptable patterns.
