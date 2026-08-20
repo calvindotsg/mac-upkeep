@@ -75,7 +75,7 @@ jobs:
           set -euo pipefail
           [[ "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || {
             echo "::error::Refusing malformed tag: $TAG"; exit 1; }
-          new_major=${BASH_REMATCH[1]}; new_minor=${BASH_REMATCH[2]}
+          new_major=${BASH_REMATCH[1]}; new_minor=${BASH_REMATCH[2]}; new_patch=${BASH_REMATCH[3]}
 
           # Compare against the highest EXISTING release tag, not the manifest:
           # by the time this job runs the release PR has merged, so
@@ -89,15 +89,21 @@ jobs:
           fi
           [[ "$prev" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || {
             echo "::error::Unparseable previous tag: $prev"; exit 1; }
-          cur_major=${BASH_REMATCH[1]}; cur_minor=${BASH_REMATCH[2]}
+          cur_major=${BASH_REMATCH[1]}; cur_minor=${BASH_REMATCH[2]}; cur_patch=${BASH_REMATCH[3]}
 
-          # A legitimate release-please bump moves major or minor by at most 1.
-          if (( new_major > cur_major + 1 )) \
-             || (( new_major == cur_major && new_minor > cur_minor + 1 )); then
-            echo "::error::Implausible jump $prev -> $TAG; a Release-As trailer may have been merged."
+          # Allowlist the three bumps release-please can actually produce, rather than
+          # bounding only upward major/minor movement -- a one-sided check accepts any
+          # version DECREASE and any patch jump, so `Release-As: 3.0.99` sails through.
+          if   (( new_major == cur_major + 1 && new_minor == 0 && new_patch == 0 )); then :
+          elif (( new_major == cur_major && new_minor == cur_minor + 1 && new_patch == 0 )); then :
+          elif (( new_major == cur_major && new_minor == cur_minor \
+                  && new_patch == cur_patch + 1 )); then :
+          else
+            echo "::error::Implausible bump $prev -> $TAG; a Release-As trailer may have been merged."
+            echo "::error::Expected one of: v$((cur_major + 1)).0.0, v${cur_major}.$((cur_minor + 1)).0, v${cur_major}.${cur_minor}.$((cur_patch + 1))"
             exit 1
           fi
-          echo "$prev -> $TAG looks like a normal bump."
+          echo "$prev -> $TAG is a normal bump."
 
   # Build is separated from publish so that anything injected into the build
   # environment cannot reach the OIDC credentials. `[build-system] requires` is

@@ -25,9 +25,17 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
+          # squash_merge_commit_title is COMMIT_OR_PR_TITLE, so for a multi-commit PR
+          # the squashed subject comes from the PR title -- which is not in git log.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           set -euo pipefail
-          if git log --format='%B' "$BASE..$HEAD" | grep -qiE '^[[:space:]]*Release-As:'; then
+          {
+            git log --format='%B' "$BASE..$HEAD"
+            printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY"
+          } > /tmp/release-as-scan.txt
+          if grep -qiE '^[[:space:]]*Release-As:' /tmp/release-as-scan.txt; then
             echo "::error::A Release-As trailer overrides release-please version derivation. Remove it."
             exit 1
           fi

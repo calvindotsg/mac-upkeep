@@ -8,9 +8,13 @@ updates:
     schedule:
       interval: weekly
     commit-message:
-      # Conventional Commits: `ci` is a release-please changelog section here and
-      # does not trigger a version bump, which is correct for a CI-only change.
       prefix: ci
+      # NOTE: `ci` DOES cut a release in this repo - v3.0.2 was produced by a single
+      # `ci:` commit. So each grouped Dependabot PR will open a release-please PR.
+      # That is triage, not breakage: close a release PR whose only contents are
+      # action-pin bumps, exactly as for any other ci/docs/chore-only release PR.
+      # Weekly is kept deliberately - stale SHA pins are the risk this file exists
+      # to manage, and pin freshness matters more than release-PR noise.
     groups:
       actions:
         patterns: ["*"]
