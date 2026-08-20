@@ -8,6 +8,10 @@
 # An anchored semver check in release.yml is NOT sufficient on its own: the
 # payload `Release-As: 99.0.0` yields the perfectly well-formed tag v99.0.0.
 # release.yml's verify-version job catches the jump; this catches the trailer.
+#
+# Both steps below treat the checkout as UNTRUSTED. It is a contributor's merge
+# tree, so nothing is installed from it, nothing is written into it, and no code
+# is resolved out of it.
 name: pr-checks
 on:
   pull_request:
@@ -32,8 +36,27 @@ jobs:
         # taking any BREAKING CHANGE footer with it.
         run: |
           set -euo pipefail
-          npm install --no-save --silent @conventional-commits/parser
-          cat > check-commit-msg.js <<'JS'
+
+          # Install AND run the parser outside the PR checkout. Three separate
+          # things are needed and none of them substitutes for the others:
+          #
+          #  1. --prefix, so npm's project config is $CCP/.npmrc rather than the
+          #     contributor's. Verified: without it `npm config get registry`
+          #     returns whatever a PR-supplied .npmrc says.
+          #  2. The script lives in $CCP too. NODE_PATH is NOT enough on its own --
+          #     node walks node_modules up from the SCRIPT's directory first and
+          #     only then consults NODE_PATH, so a PR shipping
+          #     node_modules/@conventional-commits/parser shadows it. Verified by
+          #     execution. Resolving from $CCP cannot be shadowed.
+          #  3. --ignore-scripts and a pinned version, so the dependency itself is
+          #     fixed and installs nothing executable.
+          CCP="$RUNNER_TEMP/ccp"
+          mkdir -p "$CCP"
+          npm install --prefix "$CCP" --no-save --silent --ignore-scripts \
+            --registry=https://registry.npmjs.org \
+            @conventional-commits/parser@0.4.1
+
+          cat > "$CCP/check-commit-msg.js" <<'JS'
           const { parser } = require("@conventional-commits/parser");
           const msg = require("fs").readFileSync(process.argv[2], "utf8");
           try {
@@ -44,9 +67,10 @@ jobs:
             process.exit(1);
           }
           JS
+
           git log --format='%H' "$BASE..$HEAD" | while read -r sha; do
-            git log -1 --format='%B' "$sha" > commit-msg.txt
-            node check-commit-msg.js commit-msg.txt || exit 1
+            git log -1 --format='%B' "$sha" > "$RUNNER_TEMP/commit-msg.txt"
+            node "$CCP/check-commit-msg.js" "$RUNNER_TEMP/commit-msg.txt" || exit 1
             echo "ok: $sha"
           done
 
@@ -63,8 +87,17 @@ jobs:
           {
             git log --format='%B' "$BASE..$HEAD"
             printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY"
-          } > /tmp/release-as-scan.txt
-          if grep -qiE '^[[:space:]]*Release-As:' /tmp/release-as-scan.txt; then
+          } > "$RUNNER_TEMP/release-as-scan.txt"
+          # Match the BARE token. release-please does not run a regex: it parses the
+          # commit and looks for a footer whose TOKEN lowercases to `release-as`
+          # (src/commit.ts), so every separator the conventional-commits grammar
+          # allows is honoured. `Release-As #4.1.0`, `Release-As(core): 4.1.0`,
+          # `Release-As!: 4.1.0` and `Release-As! #4.1.0` are all accepted by
+          # release-please and all slipped past the old colon-anchored pattern. Any
+          # character class after the token is guessing at a grammar release-please
+          # never consults; fail closed instead. False positives cost nothing here --
+          # the scanned text is only the PR title, PR body and commit messages.
+          if grep -qiE '^[[:space:]]*Release-As' "$RUNNER_TEMP/release-as-scan.txt"; then
             echo "::error::A Release-As trailer overrides release-please version derivation. Remove it."
             exit 1
           fi
