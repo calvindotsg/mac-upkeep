@@ -1,0 +1,16 @@
+# Actions are pinned to full commit SHAs, which is only safe if the pins are
+# maintained rather than frozen. Dependabot updates a SHA pin and rewrites the
+# trailing `# vX.Y.Z` comment alongside it.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      # Conventional Commits: `ci` is a release-please changelog section here and
+      # does not trigger a version bump, which is correct for a CI-only change.
+      prefix: ci
+    groups:
+      actions:
+        patterns: ["*"]
