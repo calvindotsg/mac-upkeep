@@ -322,3 +322,43 @@ def test_run_sends_notification_on_activity(tmp_path, monkeypatch):
         result = runner.invoke(app, ["run", "--force", "brew_update"])
     assert result.exit_code == 0
     mock_notify.assert_called_once()
+
+
+# --- F-12: the log records private repository names, so it must not be world-readable ---
+
+
+def test_setup_newsyslog_line_is_not_world_readable():
+    """git_sync writes failing repo basenames to this log at WARNING.
+
+    The Homebrew log directory is world-traversable and not TCC-gated, unlike
+    ~/Library, so 644 exposed private and employer-internal repository names to
+    every local uid -- and every rotation recreated the exposure.
+    """
+    result = runner.invoke(app, ["setup"])
+    assert result.exit_code == 0
+    newsyslog = [ln for ln in result.output.splitlines() if "newsyslog" in ln or "var/log" in ln]
+    joined = "\n".join(newsyslog)
+    assert "  640  " in joined
+    assert "  644  " not in joined
+
+
+def test_setup_warns_that_existing_newsyslog_conf_is_not_upgraded():
+    """Like the sudoers file, an installed conf and existing logs need a manual fix."""
+    result = runner.invoke(app, ["setup"])
+    assert "not upgraded" in result.output
+    assert "chmod 640" in result.output
+
+
+# --- F-10: the summary and notification must survive a failing task ---
+
+
+def test_run_still_notifies_when_a_task_explodes(tmp_path, monkeypatch):
+    """An unexpected exception must not suppress the only headless feedback channel."""
+    notify_mock = MagicMock()
+    monkeypatch.setattr("mac_upkeep.cli.notify", notify_mock)
+    monkeypatch.setattr(
+        "mac_upkeep.cli.run_all_tasks", MagicMock(side_effect=RuntimeError("kaboom"))
+    )
+    result = runner.invoke(app, ["run"])
+    assert result.exit_code == 1
+    notify_mock.assert_called_once()

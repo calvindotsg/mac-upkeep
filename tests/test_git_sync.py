@@ -7,7 +7,19 @@ import subprocess
 from unittest.mock import MagicMock
 
 from mac_upkeep.config import Config
-from mac_upkeep.git_sync import _format_failures, _resolve_paths, run_git_sync
+from mac_upkeep.git_sync import (
+    _format_failures,
+    _resolve_paths,
+    _run_git,
+    _trusted_overrides,
+    run_git_sync,
+)
+
+
+def _split_git_args(args: list[str]) -> tuple[str, list[str]]:
+    """Return (repo path, args after `-C <path>`) from a built git command."""
+    i = args.index("-C")
+    return args[i + 1], args[i + 2 :]
 
 
 def _cp(returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess:
@@ -179,19 +191,21 @@ def test_aggregate_mixed(tmp_path, monkeypatch):
     output = MagicMock()
 
     def fake_run(args, **kwargs):
-        path = args[2]
-        op = args[3] if len(args) > 3 else ""
+        # Locate `-C <path>` rather than indexing: _run_git prepends a variable
+        # number of `-c` hardening overrides ahead of it.
+        path, rest = _split_git_args(args)
+        op = rest[0] if rest else ""
         basename = os.path.basename(path)
         if basename in ("r0", "r1"):
             # not a repo
-            if op == "rev-parse" and args[4] == "--is-inside-work-tree":
+            if op == "rev-parse" and rest[1] == "--is-inside-work-tree":
                 return _cp(returncode=128)
         # Successful repos
-        if op == "rev-parse" and args[4] == "--is-inside-work-tree":
+        if op == "rev-parse" and rest[1] == "--is-inside-work-tree":
             return _cp(returncode=0, stdout="true\n")
         if op == "remote":
             return _cp(returncode=0, stdout="origin\n")
-        if op == "rev-parse" and args[4] == "--abbrev-ref" and args[5] == "HEAD":
+        if op == "rev-parse" and rest[1] == "--abbrev-ref" and rest[2] == "HEAD":
             return _cp(returncode=0, stdout="main\n")
         if op == "rev-parse" and "@{upstream}" in args:
             return _cp(returncode=0, stdout="origin/main\n")
@@ -354,3 +368,102 @@ def test_multiple_repos_share_one_reason_in_result(tmp_path, monkeypatch):
     result = run_git_sync(config, output, dry_run=False)
     assert result.status == "failed"
     assert result.reason == "2 failed: biz, ops (fatal: unable to access: network is down)"
+
+
+# --- F-04: repository-supplied config must not be able to execute a command ---
+
+
+def test_run_git_neutralises_repo_execution_directives(tmp_path, monkeypatch):
+    """Every git call carries the hardening overrides, ahead of `-C`.
+
+    Verified on git 2.55: `core.fsmonitor` fires on `git status --porcelain` -- the
+    skip_dirty *safety* check -- and `.git/hooks` fire on `pull`, so the overrides
+    have to apply to every invocation, not just the pull.
+    """
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured.setdefault("cmd", list(cmd))
+        return _cp(returncode=1)
+
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", fake_run)
+    _run_git(str(tmp_path), ["status", "--porcelain"])
+
+    cmd = captured["cmd"]
+    dash_c = cmd.index("-C")
+    overrides = {cmd[i + 1] for i, a in enumerate(cmd[:dash_c]) if a == "-c"}
+    assert "core.fsmonitor=" in overrides
+    assert "core.hooksPath=/dev/null" in overrides
+    assert "protocol.ext.allow=never" in overrides
+    assert "protocol.file.allow=never" in overrides
+    # Overrides must precede -C so they apply to the repository being entered.
+    assert cmd[dash_c + 1] == str(tmp_path)
+    assert cmd[dash_c + 2 :] == ["status", "--porcelain"]
+
+
+def test_trusted_overrides_drops_repo_helper_but_keeps_global(monkeypatch):
+    """credential.helper is reset, then the user's own global/system values re-added.
+
+    A repo-local `credential.helper = !payload` executes on an HTTP 401 (confirmed;
+    GIT_ASKPASS and GIT_TERMINAL_PROMPT do not prevent it). A bare reset would fix
+    that but break every macOS user, because Homebrew git ships
+    `credential.helper = osxkeychain` at *system* scope.
+    """
+    monkeypatch.setattr("mac_upkeep.git_sync._trusted_cache", None)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["git", "config"] and cmd[2] == "--system":
+            if cmd[-1] == "credential.helper":
+                return _cp(returncode=0, stdout="osxkeychain\n")
+        return _cp(returncode=1)
+
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", fake_run)
+    args = _trusted_overrides()
+
+    pairs = [(args[i + 1]) for i, a in enumerate(args) if a == "-c"]
+    # Reset comes first, inherited value after, so git's list ends up as the user's.
+    assert pairs.index("credential.helper=") < pairs.index("credential.helper=osxkeychain")
+    assert "core.sshCommand=" in pairs
+
+
+def test_trusted_overrides_survives_missing_git(monkeypatch):
+    """A failing `git config` probe must not break the handler."""
+    monkeypatch.setattr("mac_upkeep.git_sync._trusted_cache", None)
+    monkeypatch.setattr(
+        "mac_upkeep.git_sync.subprocess.run", MagicMock(side_effect=OSError("no git"))
+    )
+    args = _trusted_overrides()
+    assert "core.fsmonitor=" in args
+
+
+# --- F-08: a hostile remote must not inject Rich markup into our own output ---
+
+
+def test_remote_message_control_sequences_are_stripped(tmp_path, monkeypatch):
+    """OSC-8 hyperlinks in a git error must not survive into the failure reason."""
+    p = _make_repo(tmp_path, "biz")
+    config = _config([p])
+    output = MagicMock()
+
+    payload = "fatal: \x1b]8;;https://evil.sh/x\x1b\\click\x1b]8;;\x1b\\ denied"
+
+    def fake_run(cmd, **kwargs):
+        if "pull" in cmd:
+            return _cp(returncode=1, stderr=payload + "\n")
+        if "rev-parse" in cmd and "--is-inside-work-tree" in cmd:
+            return _cp(returncode=0, stdout="true\n")
+        if cmd[-1] == "remote":
+            return _cp(returncode=0, stdout="origin\n")
+        if "--symbolic-full-name" in cmd:
+            return _cp(returncode=0, stdout="origin/main\n")
+        if "status" in cmd:
+            return _cp(returncode=0, stdout="")
+        return _cp(returncode=0, stdout="main\n")
+
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", fake_run)
+    result = run_git_sync(config, output, dry_run=False)
+
+    assert result.status == "failed"
+    assert "\x1b" not in result.reason
+    assert "]8;" not in result.reason
+    assert "fatal: click denied" in result.reason

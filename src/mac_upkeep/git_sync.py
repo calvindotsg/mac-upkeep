@@ -4,21 +4,19 @@ from __future__ import annotations
 
 import glob
 import os
-import re
 import subprocess
 from typing import TYPE_CHECKING
 
-from mac_upkeep.output import TaskResult
+from mac_upkeep.output import TaskResult, strip_control_sequences
 
 if TYPE_CHECKING:
     from mac_upkeep.config import Config
     from mac_upkeep.output import Output
 
-_ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
-
 
 def _strip_ansi(text: str) -> str:
-    return _ANSI_PATTERN.sub("", text)
+    """Sanitise a git remote's message before it becomes a user-visible reason."""
+    return strip_control_sequences(text)
 
 
 def _build_env() -> dict[str, str]:
@@ -28,8 +26,69 @@ def _build_env() -> dict[str, str]:
     return env
 
 
+# Configuration keys a repository can set in its own .git/config that cause git to
+# EXECUTE a command. A directory tree that lands under a `repos` glob -- an extracted
+# archive, a restored backup, a vendor drop -- is untrusted input, and `safe.directory`
+# does not help: it keys on ownership, and anything the user unpacked is owned by the
+# user. Every entry below was verified to fire on git 2.55 from the commands this
+# handler runs; `git status --porcelain`, the skip_dirty *safety* check, is enough to
+# trigger core.fsmonitor and filter drivers on its own.
+#
+# `credential.helper` and `core.sshCommand` are reset and then re-asserted from the
+# user's own global/system config by _trusted_overrides(), so a repo-local value is
+# dropped without breaking an osxkeychain helper or a custom ssh command.
+_STATIC_OVERRIDES = [
+    "core.fsmonitor=",  # runs on any index refresh, including `status`
+    "core.hooksPath=/dev/null",  # .git/hooks: post-merge, reference-transaction
+    "protocol.ext.allow=never",  # a repo may re-enable ext:: and get a shell
+    "protocol.file.allow=never",  # blocks local-path remote.<n>.uploadpack execution
+]
+
+# Keys whose trustworthy value is whatever the user configured outside this repo.
+# Order matters: an empty value resets git's accumulated list, then each global or
+# system value is appended back.
+_INHERITED_OVERRIDES = ("credential.helper", "core.sshCommand")
+
+_trusted_cache: list[str] | None = None
+
+
+def _trusted_overrides() -> list[str]:
+    """Build the `-c` arguments that neutralise repository-supplied config.
+
+    Computed once per process: two `git config` reads, not two per repository.
+    """
+    global _trusted_cache
+    if _trusted_cache is not None:
+        return _trusted_cache
+
+    args: list[str] = []
+    for key in _STATIC_OVERRIDES:
+        args += ["-c", key]
+
+    for key in _INHERITED_OVERRIDES:
+        args += ["-c", f"{key}="]
+        for scope in ("--global", "--system"):
+            try:
+                r = subprocess.run(
+                    ["git", "config", scope, "--get-all", key],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    stdin=subprocess.DEVNULL,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if r.returncode == 0:
+                for value in r.stdout.splitlines():
+                    if value.strip():
+                        args += ["-c", f"{key}={value}"]
+
+    _trusted_cache = args
+    return args
+
+
 def _run_git(path: str, args: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess[str]:
-    cmd = ["git", "-C", path, *args]
+    cmd = ["git", *_trusted_overrides(), "-C", path, *args]
     try:
         return subprocess.run(
             cmd,

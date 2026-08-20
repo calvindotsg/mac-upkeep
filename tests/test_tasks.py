@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 from datetime import datetime, timedelta
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from mac_upkeep.config import Config, TaskDef
@@ -160,10 +161,14 @@ def test_run_task_uses_custom_timeout(mock_which, mock_run):
 
 
 def test_run_task_detect_fallback_to_cmd0():
-    """When detect is empty, falls back to cmd[0]."""
+    """When detect is empty, falls back to cmd[0].
+
+    Uses a real task name: `is_enabled` now fails closed, so an invented name would
+    be skipped as "disabled" before the detection check is ever reached.
+    """
     config = Config.load()
     with patch("mac_upkeep.tasks.shutil.which", return_value=None) as mock_which:
-        result = run_task("test", ["nonexistent_binary"], config=config, detect="")
+        result = run_task("brew_update", ["nonexistent_binary"], config=config, detect="")
     mock_which.assert_called_with("nonexistent_binary")
     assert result.status == "skipped"
     assert result.reason == "not installed"
@@ -635,3 +640,91 @@ def test_handler_dispatch_detect_miss(tmp_path, monkeypatch):
 def test_known_handlers_kept_in_sync():
     """KNOWN_HANDLERS starts empty (no handlers registered in Phase 3)."""
     assert KNOWN_HANDLERS == set(HANDLERS.keys())
+
+
+# --- F-03: a declared require_file that resolves to nothing must fail closed ---
+
+
+def test_declared_require_file_that_resolves_empty_is_skipped():
+    """brew_bundle must not run with `--file=` when no Brewfile is configured.
+
+    The old guard was `if td.require_file and ...`, which the empty string
+    short-circuited: the task ran `--file=`, and Homebrew treats a blank value as
+    absent and falls back to $PWD/Brewfile -- evaluating it as Ruby and then
+    uninstalling everything it does not list. It also failed on every run for every
+    user with no Brewfile, burning retry backoff and a failure notification.
+    """
+    config = Config.load(Path("/nonexistent/config.toml"))
+    td = config.task_defs["brew_bundle"]
+    td.require_file_declared = True
+    td.require_file = ""
+    config.run_order = ["brew_bundle"]
+    output = MagicMock()
+
+    with patch("mac_upkeep.tasks.subprocess.run") as mock_run:
+        results = run_all_tasks(config=config, output=output, dry_run=False)
+
+    mock_run.assert_not_called()
+    assert [r.status for r in results] == ["skipped"]
+    assert results[0].reason == "no file configured"
+
+
+def test_task_subprocess_gets_explicit_cwd():
+    """Tasks must not inherit the caller's working directory."""
+    config = Config.load(Path("/nonexistent/config.toml"))
+    with patch("mac_upkeep.tasks.shutil.which", return_value="/usr/bin/true"):
+        with patch("mac_upkeep.tasks.subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess([], 0, "", "")
+            run_task("brew_update", ["brew", "update"], config=config)
+    assert mock_run.call_args[1]["cwd"] == "/"
+
+
+# --- F-10: no single task may abort the run ---
+
+
+def test_run_task_survives_oserror():
+    """A shim whose shebang interpreter vanished must not propagate out of the loop."""
+    config = Config.load(Path("/nonexistent/config.toml"))
+    with patch("mac_upkeep.tasks.shutil.which", return_value="/usr/bin/true"):
+        with patch(
+            "mac_upkeep.tasks.subprocess.run",
+            side_effect=OSError(8, "Exec format error"),
+        ):
+            result = run_task("brew_update", ["brew", "update"], config=config)
+    assert result.status == "failed"
+    assert "could not execute" in result.reason
+
+
+def test_run_all_tasks_continues_after_a_task_raises():
+    """One exploding task must not suppress later tasks, the summary or the notification."""
+    config = Config.load(Path("/nonexistent/config.toml"))
+    config.run_order = ["brew_update", "brew_upgrade"]
+    output = MagicMock()
+
+    calls = []
+
+    def boom(name, *args, **kwargs):
+        calls.append(name)
+        if name == "brew_update":
+            raise RuntimeError("kaboom")
+        return TaskResult(name, "ok")
+
+    with patch("mac_upkeep.tasks._run", side_effect=boom):
+        results = run_all_tasks(config=config, output=output, dry_run=True)
+
+    assert calls == ["brew_update", "brew_upgrade"]
+    assert [r.status for r in results] == ["failed", "ok"]
+    assert "internal error" in results[0].reason
+
+
+def test_run_all_tasks_appends_into_caller_list():
+    """The caller keeps partial results, so summary/notify can still report them."""
+    config = Config.load(Path("/nonexistent/config.toml"))
+    config.run_order = ["brew_update"]
+    output = MagicMock()
+    sink: list[TaskResult] = []
+
+    with patch("mac_upkeep.tasks._run", return_value=TaskResult("brew_update", "ok")):
+        run_all_tasks(config=config, output=output, dry_run=True, results=sink)
+
+    assert [r.name for r in sink] == ["brew_update"]

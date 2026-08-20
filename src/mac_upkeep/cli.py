@@ -24,10 +24,11 @@ from mac_upkeep.config import (
     _build_variables,
     _load_defaults,
     get_brew_prefix,
+    normalize_task_key,
     resolve_variables,
 )
 from mac_upkeep.notify import detect_terminal_bundle_id, format_summary, notify
-from mac_upkeep.output import Output
+from mac_upkeep.output import Output, TaskResult
 from mac_upkeep.tasks import TASKS, _load_state, format_last_run, format_next_run, run_all_tasks
 
 app = typer.Typer(
@@ -137,26 +138,42 @@ def run(
     config = Config.load()
     output = Output(debug=debug)
 
-    # Validate and convert --force option
+    # Validate and convert --force option. Names are normalised the same way task
+    # keys are, so `--force Editor_Cache` resolves like the config key would.
     force_set: set[str] | None = None
     if force is not None:
         valid_names = set(config.run_order)
-        if "all" in force:
+        if "all" in {normalize_task_key(t) for t in force}:
             force_set = valid_names
         else:
-            invalid = [t for t in force if t not in valid_names]
+            requested = [normalize_task_key(t) for t in force]
+            invalid = [t for t in requested if t not in valid_names]
             if invalid:
                 typer.echo(f"Unknown task(s): {', '.join(invalid)}", err=True)
                 typer.echo(f"Valid tasks: {', '.join(config.run_order)}", err=True)
                 raise typer.Exit(1)
-            force_set = set(force)
+            force_set = set(requested)
 
     output.header(dry_run=dry_run, task_names=config.run_order)
-    results = run_all_tasks(config=config, output=output, dry_run=dry_run, force_tasks=force_set)
-    output.summary(results)
+
+    # `results` is passed in and appended to as tasks complete, so the summary and
+    # notification still describe the tasks that did run if the loop dies. Under
+    # launchd the notification is the only feedback channel, and summary() is also
+    # what exits the Rich Live context -- skipping it leaves the cursor hidden.
+    results: list[TaskResult] = []
+    aborted = False
+    try:
+        run_all_tasks(
+            config=config, output=output, dry_run=dry_run, force_tasks=force_set, results=results
+        )
+    except Exception:
+        aborted = True
+        logging.getLogger("mac_upkeep").exception("mac-upkeep aborted")
+    finally:
+        output.summary(results)
 
     has_activity = any(r.status in ("ok", "failed") for r in results)
-    if config.notify and not dry_run and has_activity:
+    if config.notify and not dry_run and (has_activity or aborted):
         title, message, subtitle = format_summary(results)
         brew_prefix = get_brew_prefix()
         log_url = f"file://{brew_prefix}/var/log/mac-upkeep.log"
@@ -169,6 +186,9 @@ def run(
             activate_bundle_id=bundle_id,
             open_url=log_url,
         )
+
+    if aborted:
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -425,8 +445,15 @@ def setup() -> None:
     typer.echo()
     typer.echo("# Log rotation (install separately):")
     log_path = f"{brew_prefix}/var/log/mac-upkeep.log"
-    typer.echo(f"# echo '{log_path}  {user}:admin  644  12  *  $M1D0  GN'")
+    # 640, not 644: this log records git_sync failures by repository name, which
+    # enumerates the user's private and employer-internal repositories. Unlike
+    # ~/Library, the Homebrew log directory is world-traversable and not TCC-gated,
+    # so any local uid could read it. Owner + admin group keep `mac-upkeep logs`
+    # working -- it execs tail as the file's owner.
+    typer.echo(f"# echo '{log_path}  {user}:admin  640  12  *  $M1D0  GN'")
     typer.echo("#   | sudo tee /etc/newsyslog.d/mac-upkeep.conf")
+    typer.echo("# Already installed with mode 644? newsyslog.d is not upgraded")
+    typer.echo(f"# automatically -- rewrite the conf above and: sudo chmod 640 {log_path}*")
 
 
 def _get_service_info() -> dict | None:

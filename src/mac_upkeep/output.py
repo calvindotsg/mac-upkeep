@@ -3,11 +3,39 @@
 from __future__ import annotations
 
 import logging
+import re
 import sys
 import time
 from dataclasses import dataclass, field
 
 logger = logging.getLogger("mac_upkeep")
+
+# Untrusted text reaches this module from subprocess output and from git remotes.
+# The old sanitiser matched SGR colour codes only, which leaves OSC-8 hyperlinks,
+# OSC-52 clipboard writes, cursor movement and bare C1 controls intact. Match every
+# escape sequence, then drop any remaining control character except tab and newline.
+_ESCAPE_SEQUENCES = re.compile(
+    r"""
+      \x1b \] .*? (?: \x07 | \x1b\\ )   # OSC ... terminated by BEL or ST
+    | \x1b \[ [0-?]* [ -/]* [@-~]        # CSI ... parameters, intermediates, final
+    | \x1b [@-Z\\-_]                     # other two-character Fe escapes
+    | \x1b [ -/]* [0-~]                  # nF / independent escapes
+    """,
+    re.VERBOSE | re.DOTALL,
+)
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def strip_control_sequences(text: str) -> str:
+    """Remove ANSI/OSC escape sequences and stray control characters.
+
+    Keeps tab and newline; everything else in C0/C1 goes, including the lone
+    U+009B CSI introducer and the carriage returns progress bars use to overwrite
+    lines. Bracket characters are NOT touched -- Rich markup is neutralised by
+    rendering untrusted text as a literal Text object, not by escaping here.
+    """
+    return _CONTROL_CHARS.sub("", _ESCAPE_SEQUENCES.sub("", text))
+
 
 # Icons
 _OK = "\u2713"  # ✓
@@ -155,14 +183,21 @@ class Output:
 
     def task_debug(self, line: str) -> None:
         if self.interactive:
+            from rich.text import Text
+
+            # Render as a literal Text: subprocess output and git remote messages
+            # must never be parsed as Rich markup. A bracketed path such as
+            # `[/usr/local]` raises MarkupError and aborts the whole run, and
+            # `[link=https://evil/]click[/link]` renders a real OSC-8 hyperlink
+            # with attacker-chosen target and anchor text inside our own output.
             if self._live is not None:
                 running = next((t.name for t in self._task_states if t.status == "running"), "")
                 if running and self._current_debug_task != running:
                     self._current_debug_task = running
-                    self._live.console.print(f"\n  [dim]── {running} ──[/dim]")
-                self._live.console.print(f"  [dim]{line}[/dim]")
+                    self._live.console.print(Text(f"\n  ── {running} ──", style="dim"))
+                self._live.console.print(Text(f"  {line}", style="dim"))
             else:
-                self._console.log(f"  [dim]{line}[/dim]")
+                self._console.log(Text(f"  {line}", style="dim"))
         else:
             logger.debug("  %s", line)
 
@@ -179,6 +214,7 @@ class Output:
                 self._live = None
 
             from rich.rule import Rule
+            from rich.text import Text
 
             self._console.print()
             self._console.print(Rule(style="dim"))
@@ -191,7 +227,14 @@ class Output:
                 )
                 self._console.print(f"  [red]{summary_line}[/]")
                 for r in failed:
-                    self._console.print(f"    [red]{_FAIL}[/red] {r.name} — {r.reason}")
+                    # `r.reason` carries remote-supplied text -- git_sync aggregates a
+                    # server's error message into it. This is the line the product
+                    # trains the user to act on, so it is exactly where a rendered
+                    # hyperlink would be most credible. Build it as Text.
+                    detail = Text("    ")
+                    detail.append(_FAIL, style="red")
+                    detail.append(f" {r.name} — {r.reason}")
+                    self._console.print(detail)
             else:
                 summary_line = (
                     f"mac-upkeep complete: "

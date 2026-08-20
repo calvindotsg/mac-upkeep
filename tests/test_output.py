@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import io
 from unittest.mock import patch
 
-from mac_upkeep.output import Output, TaskResult
+from mac_upkeep.output import Output, TaskResult, strip_control_sequences
 
 
 def test_task_result_defaults():
@@ -172,3 +173,79 @@ def test_output_interactive_detection_uses_isatty(mock_stdout):
     mock_stdout.isatty.return_value = False
     output2 = Output()
     assert output2.interactive is False
+
+
+# --- F-08: untrusted text must never be parsed as Rich markup ---
+
+
+def _recording_output() -> tuple[Output, io.StringIO]:
+    """An interactive Output whose Rich console writes into a buffer."""
+    from rich.console import Console
+
+    buf = io.StringIO()
+    out = Output(interactive=True)
+    out._console = Console(file=buf, force_terminal=True, width=200, highlight=False)
+    return out, buf
+
+
+def test_task_debug_does_not_crash_on_bracketed_text():
+    """`repository [/srv/git/x] is archived` used to raise MarkupError and abort the run."""
+    out, buf = _recording_output()
+    out.task_debug("repository [/srv/git/x] is archived")
+    assert "[/srv/git/x]" in buf.getvalue()
+
+
+def test_task_debug_does_not_render_hostile_hyperlink():
+    """A remote-supplied `[link=...]` must stay literal, not become a real OSC-8 link."""
+    out, buf = _recording_output()
+    out.task_debug("ERR [link=https://evil.sh/x]Fix: run this[/link]")
+    rendered = buf.getvalue()
+    # Rich's own Console.log() adds a file:// source link, so assert specifically
+    # that the ATTACKER's URL is never an OSC-8 target: a hyperlink target is
+    # terminated by ST (ESC backslash), literal text is not.
+    assert "https://evil.sh/x\x1b\\" not in rendered
+    assert "[link=https://evil.sh/x]" in rendered
+
+
+def test_summary_failure_line_does_not_render_hostile_hyperlink():
+    """summary() is the line the product trains the user to act on -- the phish target."""
+    out, buf = _recording_output()
+    out.header(dry_run=False)
+    out.summary(
+        [TaskResult("git_sync", "failed", reason="[link=https://evil.sh/x]click here[/link]")]
+    )
+    rendered = buf.getvalue()
+    assert "https://evil.sh/x\x1b\\" not in rendered
+    assert "evil.sh" in rendered
+
+
+def test_summary_does_not_crash_on_bracketed_reason():
+    out, buf = _recording_output()
+    out.header(dry_run=False)
+    out.summary([TaskResult("git_sync", "failed", reason="repo [/srv/git/x] is archived")])
+    assert "[/srv/git/x]" in buf.getvalue()
+
+
+# --- F-08: the sanitiser covers more than SGR colour codes ---
+
+
+def test_strip_control_sequences_removes_osc_hyperlink():
+    payload = "a\x1b]8;;https://evil.sh/x\x1b\\click\x1b]8;;\x1b\\b"
+    assert strip_control_sequences(payload) == "aclickb"
+
+
+def test_strip_control_sequences_removes_osc52_clipboard_write():
+    assert strip_control_sequences("x\x1b]52;c;aGF4\x07y") == "xy"
+
+
+def test_strip_control_sequences_removes_cursor_moves_and_cr():
+    assert strip_control_sequences("a\x1b[2Kb\rc") == "abc"
+
+
+def test_strip_control_sequences_removes_bare_c1():
+    assert strip_control_sequences("c1\x9b31mred") == "c131mred"
+
+
+def test_strip_control_sequences_keeps_tabs_newlines_and_brackets():
+    text = "keep\ttab\nand [/srv/git/x]"
+    assert strip_control_sequences(text) == text
