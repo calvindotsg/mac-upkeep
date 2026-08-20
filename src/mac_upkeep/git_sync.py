@@ -34,9 +34,15 @@ def _build_env() -> dict[str, str]:
 # handler runs; `git status --porcelain`, the skip_dirty *safety* check, is enough to
 # trigger core.fsmonitor and filter drivers on its own.
 #
-# `credential.helper` and `core.sshCommand` are re-derived from the user's own
-# global/system config by _trusted_overrides(), so a repo-local value is dropped
-# without breaking an osxkeychain helper or a custom ssh command.
+# `credential.helper`, `core.sshCommand`, `http.proxy` and `http.sslVerify` are
+# re-derived from the user's own global/system config by _trusted_overrides(), so a
+# repo-local value is dropped without breaking an osxkeychain helper, a custom ssh
+# command or a corporate proxy.
+#
+# This list is an ENUMERATION, and enumerations are wrong until proven complete: the
+# gpg entries below were missed by the first pass and were a live code-execution sink
+# for a whole release. Before adding any "this is the last one" claim, re-derive the
+# set against the installed git by execution.
 _STATIC_OVERRIDES = [
     "core.fsmonitor=",  # runs on any index refresh, including `status`
     "core.hooksPath=/dev/null",  # .git/hooks: post-merge, reference-transaction
@@ -47,16 +53,52 @@ _STATIC_OVERRIDES = [
     # Denying the transport is the only thing that stops it, and git:// is an
     # unauthenticated, unencrypted legacy protocol no sync target should be using.
     "protocol.git.allow=never",
+    # Signature verification is an execution sink. A repo that sets
+    # merge.verifySignatures makes `pull` verify the commit being merged, and git
+    # runs gpg.<format>.program to do it. gpg.program is the openpgp synonym and
+    # gpg.format selects which of the other three applies, so all four are pinned.
+    # Reproduced on git 2.55 against the 4.0.0 override set: the payload FIRED --
+    # both with the default format and with gpg.format=ssh. These belong in the
+    # STATIC half rather than the inherited half because an unattended --ff-only
+    # pull has no legitimate reason to verify a signature, so there is no user
+    # value to preserve. Verified not to break a normal fast-forward.
+    "merge.verifySignatures=false",
+    "gpg.program=/usr/bin/false",
+    "gpg.openpgp.program=/usr/bin/false",
+    "gpg.x509.program=/usr/bin/false",
+    "gpg.ssh.program=/usr/bin/false",
 ]
 
 # Multi-valued keys: git accumulates every value it sees, and an empty entry resets
 # the accumulated list. Reset first, then append the user's own values back.
 _INHERITED_LIST_KEYS = ("credential.helper",)
 
-# Single-valued keys, where an empty value is NOT a reset -- it is a value. Setting
-# `core.sshCommand=` makes git try to exec the empty string, which breaks every ssh
-# remote. These get the user's own global/system value, or an explicit safe default.
-_INHERITED_SCALAR_KEYS = {"core.sshCommand": "ssh"}
+# Single-valued keys. Git takes the LAST value it sees, so an entry here is a *set*,
+# never a reset -- and getting that wrong has already caused an outage in each
+# direction:
+#
+#   * `core.sshCommand=` does not mean "unset", it means "the empty command". Git
+#     forked the empty string and every ssh remote failed, on every run.
+#   * `http.proxy=` genuinely does mean "no proxy" to git, so pinning it flat is safe
+#     from the empty-value angle -- but it would discard a legitimate *global* proxy
+#     and break git_sync for every user behind one. Same silent breakage, opposite
+#     cause. Check what the specific key does; never pattern-match from another key.
+#
+# So each key here is set to the user's own global/system value when they have one and
+# to an explicit safe default otherwise. Never add a key whose default is unsafe.
+_INHERITED_SCALAR_KEYS = {
+    "core.sshCommand": "ssh",
+    # Transport redirection: a planted repo can point the fetch at an attacker's
+    # endpoint with sslVerify off, and the re-supplied credential helper above
+    # answers the resulting 401 with the user's stored credential for the real host.
+    # These two close only the GENERIC keys, and that is NOT the whole class: the
+    # per-URL and per-remote families (`http.<url>.proxy`, `http.<url>.sslVerify`,
+    # `remote.<name>.proxy`) are more specific and beat them -- confirmed by
+    # execution on git 2.55. The URL is part of the key name, so no fixed `-c` set
+    # can enumerate them; they need a pre-flight refusal instead.
+    "http.proxy": "",
+    "http.sslVerify": "true",
+}
 
 _trusted_cache: list[str] | None = None
 
@@ -97,6 +139,7 @@ def _read_user_config(key: str) -> list[str]:
                 ["git", "config", scope, "--get-all", key],
                 capture_output=True,
                 text=True,
+                errors="replace",  # see _run_git: strict decoding raises out of here
                 timeout=10,
                 stdin=subprocess.DEVNULL,
             )
@@ -114,6 +157,13 @@ def _run_git(path: str, args: list[str], *, timeout: int = 60) -> subprocess.Com
             cmd,
             capture_output=True,
             text=True,
+            # A ref name, a commit message or a server's error can carry bytes that
+            # are not valid UTF-8. `text=True` alone decodes strictly, so one such
+            # byte raised UnicodeDecodeError straight out of the handler -- past the
+            # TimeoutExpired catch below, past the per-repo loop -- and every repo
+            # sorted after the offending one silently stopped syncing, with the whole
+            # task marked failed and entering retry backoff.
+            errors="replace",
             timeout=timeout,
             stdin=subprocess.DEVNULL,
             env=_build_env(),
@@ -235,7 +285,14 @@ def run_git_sync(config: Config, output: Output, dry_run: bool) -> TaskResult:
     n_skipped = 0
     failures: list[tuple[str, str]] = []
     for path in paths:
-        status, reason = _sync_repo(path, skip_dirty=config.git_sync_skip_dirty)
+        try:
+            status, reason = _sync_repo(path, skip_dirty=config.git_sync_skip_dirty)
+        except Exception as exc:  # noqa: BLE001 - one repo must never end the task
+            # Mirrors the isolation _run_git's TimeoutExpired catch already provides.
+            # Without it, anything unanticipated inside one repository strands every
+            # repository sorted after it -- which is how the strict-decoding bug
+            # (fixed above) turned a single bad byte into a silent full-task outage.
+            status, reason = "failed", f"{type(exc).__name__}: {exc}"
         display = f"{path}: {status}"
         if reason:
             display = f"{display} ({reason})"

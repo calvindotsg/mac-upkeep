@@ -44,6 +44,20 @@ def strip_control_sequences(text: str) -> str:
     return _CONTROL_CHARS.sub("", _ESCAPE_SEQUENCES.sub("", text))
 
 
+# Every string this module renders or logs is sanitised HERE, at the sink, not by the
+# callers. Sanitising at the source is what failed: git_sync passed a git remote's
+# message through the sanitiser and then placed the repository's *directory name*
+# beside it verbatim, and a macOS filename may contain any byte except NUL and '/' --
+# ESC included. editor_cache feeds filesystem-derived names in the same way.
+#
+# `rich.text.Text` is not a substitute. It neutralises Rich MARKUP; it does not strip
+# control bytes, because `rich.control.STRIP_CONTROL_CODES` omits 0x1b. The two
+# defences are orthogonal and both are required.
+def _clean(text: str) -> str:
+    """Sanitise untrusted text on its way out of the process."""
+    return strip_control_sequences(text)
+
+
 # Icons
 _OK = "\u2713"  # ✓
 _SKIP = "\u25cb"  # ○
@@ -96,7 +110,7 @@ class Output:
         suffix = " (dry-run)" if dry_run else ""
         if self.interactive:
             if task_names:
-                self._task_states = [_TaskState(name=n) for n in task_names]
+                self._task_states = [_TaskState(name=_clean(n)) for n in task_names]
                 from rich.live import Live
 
                 self._live = Live(
@@ -153,6 +167,8 @@ class Output:
     def task_start(self, name: str) -> None:
         if self.interactive:
             if self._live is not None:
+                # Sanitised on both sides so the lookup still matches header()'s state.
+                name = _clean(name)
                 for t in self._task_states:
                     if t.name == name:
                         t.status = "running"
@@ -161,34 +177,41 @@ class Output:
         # Non-interactive: no log here; task_done handles all messages
 
     def task_done(self, result: TaskResult) -> None:
+        # `reason` carries a git remote's message and repository directory names;
+        # `name` is config-derived but sanitised alongside it so the two can never
+        # drift apart, and so the _TaskState lookup keeps matching.
+        name = _clean(result.name)
+        reason = _clean(result.reason)
         if self.interactive:
             if self._live is not None:
                 for t in self._task_states:
-                    if t.name == result.name:
+                    if t.name == name:
                         t.status = result.status
-                        t.reason = result.reason
+                        t.reason = reason
                         t.duration = result.duration
                         break
                 self._live.update(self._generate_table())
         else:
             if result.status == "skipped":
-                logger.info("SKIP: %s (%s)", result.name, result.reason)
-            elif result.status == "ok" and result.reason.startswith("dry-run"):
+                logger.info("SKIP: %s (%s)", name, reason)
+            elif result.status == "ok" and reason.startswith("dry-run"):
                 # Handlers return a richer reason ("dry-run: 17 repos"); command
                 # tasks return the bare "dry-run". Surface the extra detail when
                 # there is any, so a handler preview is not reduced to a stub.
-                detail = result.reason[len("dry-run") :].lstrip(": ")
+                detail = reason[len("dry-run") :].lstrip(": ")
                 if detail:
-                    logger.info("DRY-RUN: would run %s (%s)", result.name, detail)
+                    logger.info("DRY-RUN: would run %s (%s)", name, detail)
                 else:
-                    logger.info("DRY-RUN: would run %s", result.name)
+                    logger.info("DRY-RUN: would run %s", name)
             elif result.status == "ok":
-                logger.info("Running %s... done", result.name)
+                logger.info("Running %s... done", name)
             elif result.status == "failed":
-                logger.info("Running %s...", result.name)
-                logger.warning("%s %s", result.name, result.reason)
+                logger.info("Running %s...", name)
+                logger.warning("%s %s", name, reason)
 
     def task_debug(self, line: str) -> None:
+        # Paths, filenames and raw subprocess output all arrive here.
+        line = _clean(line)
         if self.interactive:
             from rich.text import Text
 
@@ -240,7 +263,7 @@ class Output:
                     # hyperlink would be most credible. Build it as Text.
                     detail = Text("    ")
                     detail.append(_FAIL, style="red")
-                    detail.append(f" {r.name} — {r.reason}")
+                    detail.append(f" {_clean(r.name)} — {_clean(r.reason)}")
                     self._console.print(detail)
             else:
                 summary_line = (
