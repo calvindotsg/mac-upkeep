@@ -21,6 +21,35 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - name: Reject commit messages release-please cannot parse
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        # release-please logs the parse error and then exits 0, so an unparseable
+        # message means "no release PR" with a green workflow and no other signal.
+        # A body line beginning `identifier(` is read as a `type(scope):` header;
+        # if the parens nest the scope never closes and the message is discarded,
+        # taking any BREAKING CHANGE footer with it.
+        run: |
+          set -euo pipefail
+          npm install --no-save --silent @conventional-commits/parser
+          cat > check-commit-msg.js <<'JS'
+          const { parser } = require("@conventional-commits/parser");
+          const msg = require("fs").readFileSync(process.argv[2], "utf8");
+          try {
+            parser(msg);
+          } catch (e) {
+            console.log("::error::release-please cannot parse this commit message: " + e.message);
+            console.log("::error::A body line starting with name( is read as type(scope): -- indent it or reword.");
+            process.exit(1);
+          }
+          JS
+          git log --format='%H' "$BASE..$HEAD" | while read -r sha; do
+            git log -1 --format='%B' "$sha" > commit-msg.txt
+            node check-commit-msg.js commit-msg.txt || exit 1
+            echo "ok: $sha"
+          done
+
       - name: Reject Release-As trailers
         env:
           BASE: ${{ github.event.pull_request.base.sha }}

@@ -259,6 +259,40 @@ reported `parsed OK` on the injected result.
 
 ## Release Process
 
+### A commit body line starting with `name(` silently kills the release
+
+release-please parses each commit with `@conventional-commits/parser`. A body line that
+**begins** with `identifier(` is parsed as a `type(scope):` header, so the parser enters
+scope mode and expects `)`. If the parens nest, the scope never closes, the whole message
+fails to parse, and release-please logs
+
+```
+error message: Error: unexpected token '(' at 43:24, valid tokens [)]
+No commits for path: ., skipping
+```
+
+then **exits 0**. The workflow goes green, no release PR appears, and a `BREAKING CHANGE:`
+footer is simply lost. This happened to v4.0.0's first commit, whose body contained a line
+starting `` `pwd.getpwuid(os.getuid())` ``.
+
+Verified boundaries — the trigger is the line *start*, not nesting on its own:
+
+| body line | parses |
+|---|---|
+| `a(b(c)) here` | ✗ |
+| `` `a(b(c))` here `` | ✗ |
+| `see a(b(c)) here` | ✓ |
+| `  a(b(c)) here` (indented) | ✓ |
+| `- a(b(c)) here` (bullet) | ✓ |
+| `a(b) here` (no nesting) | ✓ |
+
+So: never start a body line with a function call. Indent it, bullet it, or put a word first.
+`pr-checks.yml` now runs the real parser over every commit in a PR, because the failure mode
+is silent and a green release run is not evidence that a release was cut. **After merging
+anything with a `BREAKING CHANGE:` footer, confirm the release PR actually appeared** — the
+footer surviving onto `main` is necessary but not sufficient.
+
+
 Automated via release-please + homebrew-tap dispatch:
 
 1. Commit changes using conventional commits, push to main
