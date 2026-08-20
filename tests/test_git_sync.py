@@ -29,6 +29,29 @@ def _cp(returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.C
     )
 
 
+def _sequenced(responses: list):
+    """A `subprocess.run` stand-in that answers `_sync_repo`'s config pre-flight itself.
+
+    The pre-flight (`git config --list --show-scope`) is not what these tests are
+    about, and threading an extra entry through every fixed sequence would only make
+    them brittle in a new way -- and brittle in a way that FAILS QUIETLY: an off-by-one
+    here silently shifts every later response onto the wrong git command, so the test
+    keeps passing while exercising a different code path.
+    """
+    calls = iter(responses)
+
+    def run(*a, **k):
+        cmd = a[0] if a else k.get("args", [])
+        if "--show-scope" in cmd:
+            return _cp(returncode=0, stdout="")  # nothing unsafe declared
+        result = next(calls)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    return run
+
+
 def _config(repos: list[str], *, skip_dirty: bool = True) -> Config:
     config = Config.load()
     config.git_sync_repos = list(repos)
@@ -130,13 +153,13 @@ def test_skip_no_remote(tmp_path, monkeypatch):
     p = _make_repo(tmp_path, "biz")
     config = _config([p])
     output = MagicMock()
-    calls = iter(
+    run = _sequenced(
         [
             _cp(returncode=0, stdout="true\n"),  # is-inside-work-tree
             _cp(returncode=0, stdout=""),  # remote (empty)
         ]
     )
-    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", lambda *a, **k: next(calls))
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run)
     result = run_git_sync(config, output, dry_run=False)
     assert result.status == "ok"
     assert result.reason == "1 skipped"
@@ -147,7 +170,7 @@ def test_skip_no_upstream(tmp_path, monkeypatch):
     p = _make_repo(tmp_path, "biz")
     config = _config([p])
     output = MagicMock()
-    calls = iter(
+    run = _sequenced(
         [
             _cp(returncode=0, stdout="true\n"),  # is-inside-work-tree
             _cp(returncode=0, stdout="origin\n"),  # remote
@@ -155,7 +178,7 @@ def test_skip_no_upstream(tmp_path, monkeypatch):
             _cp(returncode=128, stderr="no upstream\n"),  # @{upstream}
         ]
     )
-    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", lambda *a, **k: next(calls))
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run)
     result = run_git_sync(config, output, dry_run=False)
     assert result.status == "ok"
     assert any(
@@ -167,7 +190,7 @@ def test_skip_dirty_worktree(tmp_path, monkeypatch):
     p = _make_repo(tmp_path, "biz")
     config = _config([p], skip_dirty=True)
     output = MagicMock()
-    calls = iter(
+    run = _sequenced(
         [
             _cp(returncode=0, stdout="true\n"),
             _cp(returncode=0, stdout="origin\n"),
@@ -176,7 +199,7 @@ def test_skip_dirty_worktree(tmp_path, monkeypatch):
             _cp(returncode=0, stdout=" M file.txt\n"),
         ]
     )
-    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", lambda *a, **k: next(calls))
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run)
     result = run_git_sync(config, output, dry_run=False)
     assert result.status == "ok"
     assert any("dirty worktree" in c[0][0] for c in output.task_debug.call_args_list)
@@ -210,6 +233,8 @@ def test_aggregate_mixed(tmp_path, monkeypatch):
             return _cp(returncode=0, stdout="main\n")
         if op == "rev-parse" and "@{upstream}" in args:
             return _cp(returncode=0, stdout="origin/main\n")
+        if op == "config":  # the unsafe-config pre-flight: nothing declared
+            return _cp(returncode=0, stdout="")
         if op == "status":
             return _cp(returncode=0, stdout="")
         if op == "pull":
@@ -230,19 +255,22 @@ def test_env_forces_no_terminal_prompt(tmp_path, monkeypatch):
     config = _config([p])
     output = MagicMock()
     run_mock = MagicMock(
-        side_effect=[
-            _cp(returncode=0, stdout="true\n"),
-            _cp(returncode=0, stdout="origin\n"),
-            _cp(returncode=0, stdout="main\n"),
-            _cp(returncode=0, stdout="origin/main\n"),
-            _cp(returncode=0, stdout=""),
-            _cp(returncode=0, stdout="Already up to date.\n"),
-        ]
+        side_effect=_sequenced(
+            [
+                _cp(returncode=0, stdout="true\n"),
+                _cp(returncode=0, stdout="origin\n"),
+                _cp(returncode=0, stdout="main\n"),
+                _cp(returncode=0, stdout="origin/main\n"),
+                _cp(returncode=0, stdout=""),
+                _cp(returncode=0, stdout="Already up to date.\n"),
+            ]
+        )
     )
     monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run_mock)
     result = run_git_sync(config, output, dry_run=False)
     assert result.status == "ok"
-    assert run_mock.call_count == 6
+    # Six sequenced responses plus the unsafe-config pre-flight _sequenced answers.
+    assert run_mock.call_count == 7
     for call in run_mock.call_args_list:
         env = call.kwargs["env"]
         assert env["GIT_TERMINAL_PROMPT"] == "0"
@@ -255,14 +283,16 @@ def test_env_respects_user_askpass(tmp_path, monkeypatch):
     config = _config([p])
     output = MagicMock()
     run_mock = MagicMock(
-        side_effect=[
-            _cp(returncode=0, stdout="true\n"),
-            _cp(returncode=0, stdout="origin\n"),
-            _cp(returncode=0, stdout="main\n"),
-            _cp(returncode=0, stdout="origin/main\n"),
-            _cp(returncode=0, stdout=""),
-            _cp(returncode=0, stdout="Already up to date.\n"),
-        ]
+        side_effect=_sequenced(
+            [
+                _cp(returncode=0, stdout="true\n"),
+                _cp(returncode=0, stdout="origin\n"),
+                _cp(returncode=0, stdout="main\n"),
+                _cp(returncode=0, stdout="origin/main\n"),
+                _cp(returncode=0, stdout=""),
+                _cp(returncode=0, stdout="Already up to date.\n"),
+            ]
+        )
     )
     monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run_mock)
     result = run_git_sync(config, output, dry_run=False)
@@ -277,7 +307,7 @@ def test_failure_surfaces_basename_and_stderr(tmp_path, monkeypatch):
     p = _make_repo(tmp_path, "biz")
     config = _config([p])
     output = MagicMock()
-    calls = iter(
+    run = _sequenced(
         [
             _cp(returncode=0, stdout="true\n"),
             _cp(returncode=0, stdout="origin\n"),
@@ -287,7 +317,7 @@ def test_failure_surfaces_basename_and_stderr(tmp_path, monkeypatch):
             _cp(returncode=128, stderr="ssh: Permission denied (publickey)\n"),
         ]
     )
-    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", lambda *a, **k: next(calls))
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run)
     result = run_git_sync(config, output, dry_run=False)
     assert result.status == "failed"
     # The cause must reach the aggregate reason, not just --debug output.
@@ -304,14 +334,16 @@ def test_pull_timeout_does_not_crash_run(tmp_path, monkeypatch):
     # MagicMock raises any exception instance found in side_effect, so the pull
     # step (last) raises TimeoutExpired exactly where _run_git calls subprocess.run.
     run_mock = MagicMock(
-        side_effect=[
-            _cp(returncode=0, stdout="true\n"),
-            _cp(returncode=0, stdout="origin\n"),
-            _cp(returncode=0, stdout="main\n"),
-            _cp(returncode=0, stdout="origin/main\n"),
-            _cp(returncode=0, stdout=""),  # clean worktree
-            subprocess.TimeoutExpired(cmd=["git", "pull"], timeout=60),  # pull hangs
-        ]
+        side_effect=_sequenced(
+            [
+                _cp(returncode=0, stdout="true\n"),
+                _cp(returncode=0, stdout="origin\n"),
+                _cp(returncode=0, stdout="main\n"),
+                _cp(returncode=0, stdout="origin/main\n"),
+                _cp(returncode=0, stdout=""),  # clean worktree
+                subprocess.TimeoutExpired(cmd=["git", "pull"], timeout=60),  # pull hangs
+            ]
+        )
     )
     monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run_mock)
     result = run_git_sync(config, output, dry_run=False)

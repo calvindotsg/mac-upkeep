@@ -174,11 +174,17 @@ Three consequences worth knowing:
 - **Local-path remotes no longer work** under git_sync (`fatal: transport 'file' not allowed`). This is deliberate — it is what closes the `uploadpack` execution path. Pull from a bare mirror on an external disk outside mac-upkeep.
 - **`git://` remotes no longer work** (`fatal: transport 'git' not allowed`). Also deliberate: `core.gitProxy` runs an arbitrary command for that transport and cannot be neutralised any other way. `git://` is unauthenticated and unencrypted; use SSH or HTTPS.
 - **Repository hooks do not run** during git_sync, so a `post-merge` hook that installs dependencies will not fire on an unattended pull.
+- **A repository that sets any per-URL `http.<url>.*` key in its own config is skipped**, not pulled. If that is a repository you configured deliberately, move the setting to your global config, where it is trusted and honoured.
 
-This is defence in depth, not a sandbox. Git has no "ignore this repository's config" switch, and the table above is an *enumeration* — it was wrong once already, and the `gpg.<format>.program` rows are what it was missing. Two residuals are known and open:
+Some keys cannot be neutralised by an override at all, because the URL or remote name is part of the key name — `http.<url>.proxy`, `http.<url>.sslVerify` and `remote.<name>.proxy` are all *more specific* than the generic keys above and therefore beat them. Two things handle those.
 
-- **`filter.<driver>.clean`** from a planted `.gitattributes`, which fires on `git status`. Driver names are arbitrary, so no fixed override covers them, and refusing every repository that declares one would refuse every git-lfs repository.
-- **The per-URL and per-remote transport keys** — `http.<url>.proxy`, `http.<url>.sslVerify` and `remote.<name>.proxy`. These are *more specific* than the generic keys in the table and therefore beat them; the URL is part of the key name, so they cannot be enumerated as fixed overrides either. Their effect is redirection and credential disclosure rather than execution.
+**A repository declaring one is refused.** Before any network call, git_sync reads the repository's own configuration and **skips the repository entirely** if it declares any per-URL `http.<url>.*` key or a `remote.<name>.proxy*` key, with a reason naming the key. The read is `git config --list`, which parses configuration files and executes nothing. The whole per-URL namespace is matched rather than a list of specific keys, because a list of "the dangerous ones" is the thing that was already wrong twice — `sslCAInfo`, which swaps in an attacker's CA, would have been the next omission. Two-component keys such as `http.postBuffer` are unaffected. `filter.*` is deliberately *not* matched, since that would refuse every git-lfs repository.
+
+The check covers the `local` and `worktree` scopes and any file they `include`, so it cannot be sidestepped by `extensions.worktreeConfig`. It does *not* look at your own global or system configuration — a proxy you configured is yours to configure. If it cannot read the repository's config at all, the repository is skipped rather than entered.
+
+**Proxying is also blocked structurally.** When you have no proxy configured anywhere — no `http.proxy` in your global or system config, and no `http_proxy`/`https_proxy`/`all_proxy` in the environment — git_sync runs git with `NO_PROXY=*`, which a repository cannot override because it is an environment variable rather than a config key. If you *do* use a proxy, yours is left alone and the refusal above is what protects you.
+
+This is defence in depth, not a sandbox. Git has no "ignore this repository's config" switch, and the table above is an *enumeration* — it was wrong once already, and the `gpg.<format>.program` rows are what it was missing. One residual is known and open: **`filter.<driver>.clean`** from a planted `.gitattributes`, which fires on `git status`. Driver names are arbitrary, so no fixed override covers them, and refusing every repository that declares one would refuse every git-lfs repository.
 
 Enrolment discipline is the control that actually holds.
 

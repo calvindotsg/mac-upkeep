@@ -183,18 +183,65 @@ help — it keys on ownership, and an extracted archive is owned by the invoking
     from that angle — but pinning it flat would discard a legitimate **global** proxy and
     break git_sync for every user behind one. Same silent breakage, opposite cause.
     Check the specific key's semantics; never pattern-match from another key.
-- **Known residuals, do not claim otherwise.** Two, not one — the README said
-  `filter.<driver>.clean` was the only remaining path and that was wrong:
-  - `filter.<driver>.clean` from a planted `.gitattributes` still executes on `status`.
-    Driver names are arbitrary, so no fixed `-c` set covers them, and refusing every repo
-    that declares one would refuse every git-lfs repo.
-  - The **per-URL and per-remote transport families** — `http.<url>.proxy`,
-    `http.<url>.sslVerify`, `remote.<name>.proxy`. Verified on git 2.55: each of these
-    beats the corresponding generic `-c` override, because git resolves `http.<url>.*` by
-    urlmatch with most-specific-wins rather than folding it into the generic key (the
-    opposite of `credential.helper` above — the two families look alike and behave
-    oppositely). The URL is part of the key name, so **no fixed `-c` set can enumerate
-    them**; the only closure is a pre-flight read-and-refuse.
+- **Some families cannot be overridden at all, and are refused instead.** `-c` neutralises
+  a key by *naming* it, so it is useless against `http.<url>.proxy`, `http.<url>.sslVerify`
+  and `remote.<name>.proxy`, where the URL or remote name is part of the key name. Verified
+  on git 2.55: each of these beats the corresponding generic `-c` override, because git
+  resolves `http.<url>.*` by urlmatch with most-specific-wins rather than folding it into
+  the generic key — **the exact opposite of `credential.helper` above**, which git *does*
+  fold, which is why the list reset reaches `credential.<url>.helper` for free. The two
+  families look alike and behave oppositely; do not reason about one from the other.
+
+  Two mechanisms close it, and the split matters:
+
+  **1. `NO_PROXY=*` in `_build_env()` — structural, not enumerated.** A repository cannot
+  set an environment variable, and curl consults `NO_PROXY` on every request. Verified on
+  git 2.55 to defeat **both** `http.<url>.proxy` and `remote.<name>.proxy`. (`-c
+  http.noProxy=*` does nothing — git 2.55 has no such key; the env var is the only lever.)
+  Applied **only** when the user has no proxy of their own — no `http.proxy` at
+  global/system scope and no `http_proxy`/`https_proxy`/`all_proxy` in the environment.
+  Those three env vars plus `http.proxy` are the *complete* set of proxy sources git
+  consults: libcurl does not read `~/.curlrc` (only the curl binary does) and git does not
+  read macOS system proxy settings. Blanketing `NO_PROXY` over a legitimate corporate proxy
+  would be the same silent breakage as `core.sshCommand=`, so it is conditional; those
+  users are covered by mechanism 2 instead.
+
+  **2. `_unsafe_repo_config()`** reads the repository's own config with
+  `git config --list --show-scope -z` and returns a skip naming the offending key. This is
+  the control, not the belt-and-braces: it is uniform (it protects proxy users too) and it
+  is the only thing covering `http.<url>.sslVerify` and `http.<url>.sslCAInfo`, for which
+  no environment lever exists — `GIT_SSL_NO_VERIFY` only goes the unsafe direction.
+
+  Non-obvious properties, all load-bearing:
+  - **The pattern matches the whole per-URL `http.<url>.*` namespace**, not a list of
+    dangerous keys. Sonar's write-up of this attack class against git integrations is
+    explicit that enumeration does not work — *"it would be very hard to establish a list
+    of 'safe' configuration directives"* — and this file has been wrong about a key list's
+    completeness twice already (`core.gitProxy`, then `gpg.<format>.program`). Narrowing it
+    back to `(proxy|sslVerify)` reopens `sslCAInfo`, which substitutes an attacker CA and
+    defeats verification identically. A negative control asserts exactly that.
+  - **Two-component keys must NOT match.** `http.proxy`, `http.sslVerify`,
+    `http.postBuffer` have no subsection and are handled as inherited scalars; refusing on
+    them would reject ordinary repositories. Also negative-controlled.
+  - **`--show-scope`, not `--local`.** A repo that sets `extensions.worktreeConfig` gets a
+    second file, `.git/config.worktree`, which `git config --local --list` does **not**
+    show (verified). `_REPO_SCOPES` is `{local, worktree}`. `include.path` values are
+    reported under the *including* file's scope, so includes are covered for free.
+  - **`-z`, because a config value may contain a newline.** Records are
+    `scope NUL key LF value NUL`, so the split alternates. Keys cannot contain a newline
+    and nothing may contain NUL.
+  - **Fail closed.** Every git repository has at least `core.repositoryformatversion`, so a
+    non-zero exit means the config could not be read; "cannot tell" must not resolve to
+    "enter it anyway". The result is a **skip, not a failure**, so a permanently-refused
+    repository cannot drive retry backoff or notify on every scheduled run.
+  - **Narrow in the other direction.** Do not extend the pattern to `filter.*` — that would
+    refuse every git-lfs repository. `remote.<name>.*` matches only the proxy keys, because
+    `remote.<name>.url` and `.fetch` are ordinary. Both negative-controlled.
+  - The pre-flight is a pure read: `git config --list` parses files and touches no work
+    tree, no filters and no fsmonitor, so the check is not itself a new sink.
+- **Known residual, do not claim otherwise:** `filter.<driver>.clean` from a planted
+  `.gitattributes` still executes on `status`. Driver names are arbitrary, so no fixed `-c`
+  set covers them, and refusing every repo that declares one is the git-lfs mistake above.
 
   Git has no "ignore repo-local config" switch. Enrolment discipline is the real control.
   Before adding a "this is the only remaining sink" claim anywhere, re-derive the list
@@ -204,6 +251,12 @@ help — it keys on ownership, and an extracted archive is owned by the invoking
 - `_trusted_cache` is process-global; `tests/conftest.py` seeds it with the static half so
   argv is deterministic and the `git config` probes are not caught by tests that patch
   `git_sync.subprocess.run`. Tests exercising the inherited half reset it to `None`.
+- **`_sync_repo` now makes one more git call than the fixed-sequence mocks in
+  `tests/test_git_sync.py` expected.** Those used `iter([...])`/`side_effect=[...]`, so an
+  extra call silently shifts every later response onto the wrong git command and the test
+  keeps passing while exercising a different path — which is what happened when the
+  pre-flight landed. `_sequenced()` answers the pre-flight itself; use it rather than
+  padding a sequence when adding a call.
 
 ### Untrusted text is never Rich markup
 
