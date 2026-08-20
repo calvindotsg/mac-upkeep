@@ -4,21 +4,19 @@ from __future__ import annotations
 
 import glob
 import os
-import re
 import subprocess
 from typing import TYPE_CHECKING
 
-from mac_upkeep.output import TaskResult
+from mac_upkeep.output import TaskResult, strip_control_sequences
 
 if TYPE_CHECKING:
     from mac_upkeep.config import Config
     from mac_upkeep.output import Output
 
-_ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
-
 
 def _strip_ansi(text: str) -> str:
-    return _ANSI_PATTERN.sub("", text)
+    """Sanitise a git remote's message before it becomes a user-visible reason."""
+    return strip_control_sequences(text)
 
 
 def _build_env() -> dict[str, str]:
@@ -28,8 +26,89 @@ def _build_env() -> dict[str, str]:
     return env
 
 
+# Configuration keys a repository can set in its own .git/config that cause git to
+# EXECUTE a command. A directory tree that lands under a `repos` glob -- an extracted
+# archive, a restored backup, a vendor drop -- is untrusted input, and `safe.directory`
+# does not help: it keys on ownership, and anything the user unpacked is owned by the
+# user. Every entry below was verified to fire on git 2.55 from the commands this
+# handler runs; `git status --porcelain`, the skip_dirty *safety* check, is enough to
+# trigger core.fsmonitor and filter drivers on its own.
+#
+# `credential.helper` and `core.sshCommand` are re-derived from the user's own
+# global/system config by _trusted_overrides(), so a repo-local value is dropped
+# without breaking an osxkeychain helper or a custom ssh command.
+_STATIC_OVERRIDES = [
+    "core.fsmonitor=",  # runs on any index refresh, including `status`
+    "core.hooksPath=/dev/null",  # .git/hooks: post-merge, reference-transaction
+    "protocol.ext.allow=never",  # a repo may re-enable ext:: and get a shell
+    "protocol.file.allow=never",  # blocks local-path remote.<n>.uploadpack execution
+    # core.gitProxy runs an arbitrary command for git:// remotes and canNOT be
+    # neutralised by a `-c` override -- an empty value does not disable it (verified).
+    # Denying the transport is the only thing that stops it, and git:// is an
+    # unauthenticated, unencrypted legacy protocol no sync target should be using.
+    "protocol.git.allow=never",
+]
+
+# Multi-valued keys: git accumulates every value it sees, and an empty entry resets
+# the accumulated list. Reset first, then append the user's own values back.
+_INHERITED_LIST_KEYS = ("credential.helper",)
+
+# Single-valued keys, where an empty value is NOT a reset -- it is a value. Setting
+# `core.sshCommand=` makes git try to exec the empty string, which breaks every ssh
+# remote. These get the user's own global/system value, or an explicit safe default.
+_INHERITED_SCALAR_KEYS = {"core.sshCommand": "ssh"}
+
+_trusted_cache: list[str] | None = None
+
+
+def _trusted_overrides() -> list[str]:
+    """Build the `-c` arguments that neutralise repository-supplied config.
+
+    Computed once per process: two `git config` reads, not two per repository.
+    """
+    global _trusted_cache
+    if _trusted_cache is not None:
+        return _trusted_cache
+
+    args: list[str] = []
+    for key in _STATIC_OVERRIDES:
+        args += ["-c", key]
+
+    for key in _INHERITED_LIST_KEYS:
+        args += ["-c", f"{key}="]  # reset the accumulated list
+        args += [a for v in _read_user_config(key) for a in ("-c", f"{key}={v}")]
+
+    for key, fallback in _INHERITED_SCALAR_KEYS.items():
+        values = _read_user_config(key)
+        # Last value wins for a scalar key; take the user's own if they set one,
+        # otherwise name the default explicitly so a repo-local value cannot win.
+        args += ["-c", f"{key}={values[-1] if values else fallback}"]
+
+    _trusted_cache = args
+    return args
+
+
+def _read_user_config(key: str) -> list[str]:
+    """Values for `key` from the user's global and system git config only."""
+    values: list[str] = []
+    for scope in ("--global", "--system"):
+        try:
+            r = subprocess.run(
+                ["git", "config", scope, "--get-all", key],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if r.returncode == 0:
+            values += [v for v in r.stdout.splitlines() if v.strip()]
+    return values
+
+
 def _run_git(path: str, args: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess[str]:
-    cmd = ["git", "-C", path, *args]
+    cmd = ["git", *_trusted_overrides(), "-C", path, *args]
     try:
         return subprocess.run(
             cmd,

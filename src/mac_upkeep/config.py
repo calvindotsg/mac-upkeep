@@ -32,6 +32,55 @@ class TaskDef:
     require_file: str = ""
     timeout: int = 300
     handler: str = ""
+    # Set at load time when `require_file` was non-empty BEFORE variable resolution.
+    # Lets run_all_tasks tell "requires a file that resolved to nothing" apart from
+    # "never required one" -- the former must fail closed, not run without a file.
+    require_file_declared: bool = False
+
+
+# Field types accepted from user TOML. A quoted TOML boolean (`enabled = "false"`)
+# is the most common TOML mistake, and it used to leave a truthy string behind --
+# silently ENABLING a task the user meant to disable. Validation makes it an error.
+_FIELD_TYPES: dict[str, type] = {
+    "description": str,
+    "command": str,
+    "detect": str,
+    "frequency": str,
+    "enabled": bool,
+    "sudo": bool,
+    "shell": str,
+    "require_file": str,
+    "timeout": int,
+    "handler": str,
+}
+
+
+def normalize_task_key(name: str) -> str:
+    """Canonical task key: lowercased, spaces collapsed to underscores.
+
+    tasks.py derives the same key from a task's display name, so `Config.is_enabled`
+    only resolves if both sides normalise identically. Doing it once at load time
+    makes the two keyspaces the same by construction -- previously `[tasks.DockerPrune]`
+    was stored under its raw name, the lookup missed, and `enabled = false` was ignored.
+    """
+    return name.lower().replace(" ", "_")
+
+
+def _check_field(task: str, field_name: str, value: object) -> object:
+    """Validate one user-supplied field against its declared type."""
+    expected = _FIELD_TYPES.get(field_name)
+    if expected is None:
+        return value
+    # bool subclasses int, so `timeout = true` would otherwise pass an int check.
+    if not isinstance(value, expected) or (expected is int and isinstance(value, bool)):
+        hint = ""
+        if expected is bool:
+            hint = ' TOML booleans are unquoted: `enabled = false`, not `enabled = "false"`.'
+        raise ValueError(
+            f"Task '{task}': '{field_name}' must be {expected.__name__}, "
+            f"got {type(value).__name__} ({value!r}).{hint}"
+        )
+    return value
 
 
 def get_brew_prefix() -> str:
@@ -103,33 +152,49 @@ def load_task_defs(
     """
     defaults = _load_defaults()
 
-    # Parse default tasks
+    # Parse default tasks. Keys are normalised here so every downstream lookup
+    # (run_order, is_enabled, env overrides, --force) shares one keyspace.
     task_defs: dict[str, TaskDef] = {}
-    for name, data in defaults.get("tasks", {}).items():
+    for raw_name, data in defaults.get("tasks", {}).items():
+        name = normalize_task_key(raw_name)
         task_defs[name] = _parse_task_def(name, data)
 
     # Default run order
-    run_order = defaults.get("run", {}).get("order", list(task_defs.keys()))
+    run_order = [
+        normalize_task_key(n) for n in defaults.get("run", {}).get("order", list(task_defs.keys()))
+    ]
 
     # Merge user overrides
     if user_data:
-        for name, user_fields in user_data.get("tasks", {}).items():
+        seen_raw: dict[str, str] = {}
+        for raw_name, user_fields in user_data.get("tasks", {}).items():
+            name = normalize_task_key(raw_name)
+            # Two distinct TOML names collapsing to one key would make the winner
+            # depend on table order -- reject instead of silently dropping one.
+            if name in seen_raw and seen_raw[name] != raw_name:
+                raise ValueError(
+                    f"Tasks '{seen_raw[name]}' and '{raw_name}' both normalise to "
+                    f"'{name}'; task names are case- and space-insensitive."
+                )
+            seen_raw[name] = raw_name
+
             if name in task_defs:
                 # Field-level override: only specified fields change
                 td = task_defs[name]
                 for field_name, value in user_fields.items():
                     if hasattr(td, field_name):
-                        setattr(td, field_name, value)
+                        setattr(td, field_name, _check_field(raw_name, field_name, value))
             else:
                 # New custom task
-                task_defs[name] = _parse_task_def(name, user_fields)
+                task_defs[name] = _parse_task_def(name, user_fields, raw_name=raw_name)
 
         # User run order replaces default entirely
         if "run" in user_data and "order" in user_data["run"]:
-            run_order = user_data["run"]["order"]
+            run_order = [normalize_task_key(n) for n in user_data["run"]["order"]]
         else:
             # Auto-append custom tasks to default order
-            for name in user_data.get("tasks", {}):
+            for raw_name in user_data.get("tasks", {}):
+                name = normalize_task_key(raw_name)
                 if name not in run_order:
                     run_order.append(name)
 
@@ -158,7 +223,10 @@ def load_task_defs(
         env_key = f"MAC_UPKEEP_{task_name.upper()}"
         env_val = os.environ.get(env_key)
         if env_val is not None:
-            td.enabled = env_val.lower() not in ("false", "0", "no")
+            # Allowlist, not denylist: `MAC_UPKEEP_EDITOR_CACHE=off` (or `disabled`,
+            # or an empty string) used to fall through the denylist and ENABLE a
+            # destructive task. Anything not explicitly truthy now disables.
+            td.enabled = env_val.strip().lower() in ("true", "1", "yes", "on")
 
         freq_key = f"MAC_UPKEEP_{task_name.upper()}_FREQUENCY"
         freq_val = os.environ.get(freq_key)
@@ -171,6 +239,7 @@ def load_task_defs(
         if td.detect:
             td.detect = resolve_variables(td.detect, variables)
         if td.require_file:
+            td.require_file_declared = True
             td.require_file = resolve_variables(td.require_file, variables)
 
     # Auto-infer detect from command for tasks that don't set it
@@ -181,20 +250,33 @@ def load_task_defs(
     return task_defs, run_order
 
 
-def _parse_task_def(name: str, data: dict) -> TaskDef:
-    """Parse a TOML task table into a TaskDef."""
+def _parse_task_def(name: str, data: dict, *, raw_name: str | None = None) -> TaskDef:
+    """Parse a TOML task table into a TaskDef.
+
+    Every field is type-checked: a brand-new custom task gets the same validation
+    as a field-level override, so `enabled = "false"` cannot create a task that
+    reports itself disabled while running anyway. `raw_name` is the name as the
+    user wrote it, used only so errors quote what is actually in their file.
+    """
+    label = raw_name or name
+
+    def field(key: str, default: object) -> object:
+        if key not in data:
+            return default
+        return _check_field(label, key, data[key])
+
     return TaskDef(
         name=name,
-        description=data.get("description", ""),
-        command=data.get("command", ""),
-        detect=data.get("detect", ""),
-        frequency=data.get("frequency", "weekly"),
-        enabled=data.get("enabled", True),
-        sudo=data.get("sudo", False),
-        shell=data.get("shell", ""),
-        require_file=data.get("require_file", ""),
-        timeout=data.get("timeout", 300),
-        handler=data.get("handler", ""),
+        description=field("description", ""),
+        command=field("command", ""),
+        detect=field("detect", ""),
+        frequency=field("frequency", "weekly"),
+        enabled=field("enabled", True),
+        sudo=field("sudo", False),
+        shell=field("shell", ""),
+        require_file=field("require_file", ""),
+        timeout=field("timeout", 300),
+        handler=field("handler", ""),
     )
 
 
@@ -272,9 +354,15 @@ class Config:
         return config
 
     def is_enabled(self, task: str) -> bool:
-        """Check if a task is enabled in config."""
+        """Check if a task is enabled in config. Fails CLOSED on an unknown key.
+
+        Every caller derives `task` from a real TaskDef via `normalize_task_key`,
+        so a miss means the keyspaces diverged -- which must never be resolved by
+        running a task the user disabled. Requires the load-time key normalisation
+        to be in place; without it a capitalised custom task would never run.
+        """
         td = self.task_defs.get(task)
-        return td.enabled if td else True
+        return bool(td.enabled) if td else False
 
     def get_frequency(self, task: str) -> str:
         """Get the frequency for a task ('weekly' or 'monthly')."""
@@ -283,11 +371,18 @@ class Config:
 
 
 def _discover_brewfile() -> str | None:
-    """Auto-discover Brewfile from common locations."""
+    """Auto-discover Brewfile from absolute, user-owned locations only.
+
+    A CWD-relative `Path("Brewfile")` candidate is deliberately absent. `brew bundle`
+    evaluates a Brewfile as Ruby (`bundle/dsl.rb` `instance_eval`) and this project
+    runs `cleanup --force`, which uninstalls everything the file does not list and
+    resets Homebrew's trust store. Letting the process working directory pick the
+    file turned any checkout a developer happened to be sitting in into both a
+    code-execution and a mass-uninstall vector.
+    """
     candidates = [
         Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "Brewfile",
         Path.home() / ".Brewfile",
-        Path("Brewfile"),
     ]
     for candidate in candidates:
         if candidate.is_file():

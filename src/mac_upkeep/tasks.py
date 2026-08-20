@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import shlex
 import shutil
 import subprocess
@@ -14,8 +13,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from mac_upkeep.config import Config, TaskDef, load_default_task_names
-from mac_upkeep.output import TaskResult
+from mac_upkeep.config import Config, TaskDef, load_default_task_names, normalize_task_key
+from mac_upkeep.output import TaskResult, strip_control_sequences
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -28,7 +27,6 @@ logger = logging.getLogger("mac_upkeep")
 TASKS, _DEFAULT_ORDER = load_default_task_names()
 ALL_TASK_NAMES = list(_DEFAULT_ORDER)
 
-ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
 
 # State file for per-task frequency tracking
 _xdg_state = os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state"))
@@ -42,6 +40,12 @@ FREQUENCY_THRESHOLDS: dict[str, timedelta] = {
     "weekly": timedelta(days=6),
     "monthly": timedelta(days=27),
 }  # buffer for schedule drift
+
+# Tasks run with an explicit working directory so nothing about where the user
+# happened to invoke mac-upkeep can influence them. `brew bundle` in particular
+# falls back to $PWD/Brewfile when given a blank --file. "/" matches what launchd
+# already provides for the scheduled run, so interactive and scheduled runs agree.
+_TASK_CWD = "/"
 
 # Failed tasks back off 1h, 2h, 4h, ... capped at their own frequency threshold.
 # Without this a permanently-failing task re-runs on every invocation (RunAtLoad,
@@ -265,8 +269,13 @@ def format_next_run(
 
 
 def strip_ansi(text: str) -> str:
-    """Remove ANSI color codes from text."""
-    return ANSI_PATTERN.sub("", text)
+    """Remove ANSI escape sequences and control characters from task output.
+
+    Kept as the module's public name; the implementation now lives in output.py so
+    git_sync shares one sanitiser. It no longer strips colour codes only -- see
+    `strip_control_sequences`.
+    """
+    return strip_control_sequences(text)
 
 
 def _build_cmd(td: TaskDef) -> list[str]:
@@ -299,7 +308,7 @@ def run_task(
 
     All logging/display is delegated to Output. run_task is a pure executor.
     """
-    task_key = name.lower().replace(" ", "_")
+    task_key = normalize_task_key(name)
 
     if not config.is_enabled(task_key):
         return TaskResult(name, "skipped", reason="disabled")
@@ -313,6 +322,8 @@ def run_task(
         return TaskResult(name, "ok", reason="dry-run")
 
     start = time.monotonic()
+    # Only the subprocess call is guarded: an OSError raised while *emitting* output
+    # is a different fault and must not be reported as an execution failure.
     try:
         result = subprocess.run(
             cmd,
@@ -320,25 +331,34 @@ def run_task(
             text=True,
             timeout=timeout,
             stdin=subprocess.DEVNULL,
+            cwd=_TASK_CWD,
         )
-        duration = time.monotonic() - start
-        raw_output = strip_ansi(result.stdout + result.stderr).strip()
-        if raw_output:
-            for line in raw_output.splitlines():
-                if output is not None:
-                    output.task_debug(line)
-                else:
-                    logger.debug("  %s", line)
-        if result.returncode != 0:
-            return TaskResult(
-                name, "failed", reason=f"exit code {result.returncode}", duration=duration
-            )
     except subprocess.TimeoutExpired:
         duration = time.monotonic() - start
         return TaskResult(name, "failed", reason="timed out", duration=duration)
-    except subprocess.CalledProcessError as e:
+    except OSError as exc:
+        # shutil.which() found the command but it could not actually be executed --
+        # a shim whose shebang interpreter vanished after a Homebrew Python/Node
+        # bump is the routine case. This used to propagate out of the task loop and
+        # abort the run, skipping summary() and notify(); under launchd the
+        # notification is the user's only feedback channel, so the run failed
+        # silently and identically forever. Same reasoning as _run_git's
+        # synthetic returncode=124 on timeout.
         duration = time.monotonic() - start
-        return TaskResult(name, "failed", reason=strip_ansi(e.stderr or str(e)), duration=duration)
+        return TaskResult(name, "failed", reason=f"could not execute: {exc}", duration=duration)
+
+    duration = time.monotonic() - start
+    raw_output = strip_ansi(result.stdout + result.stderr).strip()
+    if raw_output:
+        for line in raw_output.splitlines():
+            if output is not None:
+                output.task_debug(line)
+            else:
+                logger.debug("  %s", line)
+    if result.returncode != 0:
+        return TaskResult(
+            name, "failed", reason=f"exit code {result.returncode}", duration=duration
+        )
 
     return TaskResult(name, "ok", duration=duration)
 
@@ -359,7 +379,7 @@ def _run(
     --force filters to selected tasks. Frequency applies by default;
     forced tasks bypass it. task_start only called for tasks that execute.
     """
-    task_key = name.lower().replace(" ", "_")
+    task_key = normalize_task_key(name)
 
     # --force filters to specific tasks
     if force_tasks is not None and task_key not in force_tasks:
@@ -410,7 +430,7 @@ def _run_handler(
     force_tasks: set[str] | None,
 ) -> TaskResult:
     """Dispatch a handler-driven task. Mirrors _run's filter/frequency/detect contract."""
-    task_key = name.lower().replace(" ", "_")
+    task_key = normalize_task_key(name)
 
     if force_tasks is not None and task_key not in force_tasks:
         result = TaskResult(name, "skipped", reason="not selected")
@@ -461,19 +481,28 @@ def run_all_tasks(
     output: Output,
     dry_run: bool = False,
     force_tasks: set[str] | None = None,
+    results: list[TaskResult] | None = None,
 ) -> list[TaskResult]:
-    """Run all mac-upkeep tasks in order. Returns list of task results."""
-    results: list[TaskResult] = []
+    """Run all mac-upkeep tasks in order. Returns list of task results.
+
+    Pass `results` to have each result appended as it completes, so a caller can
+    still report on the tasks that finished if the loop is interrupted.
+    """
+    if results is None:
+        results = []
 
     for task_name in config.run_order:
         td = config.task_defs.get(task_name)
         if td is None:
             continue
 
-        # Handler-dispatched tasks bypass subprocess command building
-        if td.handler:
+        # No single task may abort the loop: doing so skips every later task plus
+        # output.summary() and notify(), which under launchd is the user's only
+        # feedback channel. _run/_run_handler already convert expected failures
+        # into TaskResults; this is the backstop for everything else.
+        try:
             results.append(
-                _run_handler(
+                _dispatch_task(
                     task_name,
                     td,
                     config=config,
@@ -482,33 +511,75 @@ def run_all_tasks(
                     force_tasks=force_tasks,
                 )
             )
-            continue
-
-        # require_file tasks: check filter → enabled → file exists
-        # (preserves current brew_bundle delegation pattern)
-        if td.require_file and not Path(td.require_file).is_file():
-            if force_tasks is not None and task_name not in force_tasks:
-                r = TaskResult(task_name, "skipped", reason="not selected")
-            elif not td.enabled:
-                r = TaskResult(task_name, "skipped", reason="disabled")
-            else:
-                r = TaskResult(task_name, "skipped", reason=f"file not found: {td.require_file}")
+        except Exception as exc:  # noqa: BLE001 - deliberate per-task backstop
+            logger.debug("task %s raised", task_name, exc_info=True)
+            r = TaskResult(task_name, "failed", reason=f"internal error: {exc}")
             output.task_done(r)
             results.append(r)
-            continue
-
-        cmd = _build_cmd(td)
-        results.append(
-            _run(
-                task_name,
-                cmd,
-                config=config,
-                output=output,
-                dry_run=dry_run,
-                force_tasks=force_tasks,
-                detect=td.detect,
-                timeout=td.timeout,
-            )
-        )
+            if not dry_run:
+                _record_failure(normalize_task_key(task_name))
 
     return results
+
+
+def _dispatch_task(
+    task_name: str,
+    td: TaskDef,
+    *,
+    config: Config,
+    output: Output,
+    dry_run: bool,
+    force_tasks: set[str] | None,
+) -> TaskResult:
+    """Route one task to its handler or subprocess path."""
+    # Handler-dispatched tasks bypass subprocess command building
+    if td.handler:
+        return _run_handler(
+            task_name,
+            td,
+            config=config,
+            output=output,
+            dry_run=dry_run,
+            force_tasks=force_tasks,
+        )
+
+    # A task that DECLARES require_file but whose template resolved to nothing must
+    # fail closed. The old guard was `if td.require_file and ...`, which the empty
+    # string short-circuited: brew_bundle then ran `--file=`, and Homebrew treats a
+    # blank value as absent and falls back to $PWD/Brewfile. It also failed on every
+    # run for every user with no Brewfile, burning retry backoff and a notification.
+    if td.require_file_declared and not td.require_file:
+        r = _require_file_skip(task_name, td, force_tasks, reason="no file configured")
+        output.task_done(r)
+        return r
+
+    # require_file tasks: check filter → enabled → file exists
+    # (preserves current brew_bundle delegation pattern)
+    if td.require_file and not Path(td.require_file).is_file():
+        r = _require_file_skip(
+            task_name, td, force_tasks, reason=f"file not found: {td.require_file}"
+        )
+        output.task_done(r)
+        return r
+
+    return _run(
+        task_name,
+        _build_cmd(td),
+        config=config,
+        output=output,
+        dry_run=dry_run,
+        force_tasks=force_tasks,
+        detect=td.detect,
+        timeout=td.timeout,
+    )
+
+
+def _require_file_skip(
+    task_name: str, td: TaskDef, force_tasks: set[str] | None, *, reason: str
+) -> TaskResult:
+    """Skip result for a require_file task, preserving filter → enabled → file order."""
+    if force_tasks is not None and task_name not in force_tasks:
+        return TaskResult(task_name, "skipped", reason="not selected")
+    if not td.enabled:
+        return TaskResult(task_name, "skipped", reason="disabled")
+    return TaskResult(task_name, "skipped", reason=reason)

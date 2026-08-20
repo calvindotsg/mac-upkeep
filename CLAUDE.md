@@ -23,9 +23,10 @@ defaults.toml → bundled task definitions, loaded via importlib.resources
 config.py     → TaskDef dataclass, load_task_defs(), resolve_variables(), get_brew_prefix(),
                 Config.load() (3-layer merge: defaults.toml → user config → env vars)
 tasks.py      → _build_cmd(), run_task(), _run(), run_all_tasks() data-driven loop,
-                frequency scheduling, format_last_run(), format_next_run(), ANSI stripping
+                frequency scheduling, format_last_run(), format_next_run()
 cli.py        → Typer app: run, tasks, init, show-config, setup, status (dashboard), logs, notify-test
-output.py     → TaskResult dataclass, Rich Live table TUI (interactive), Python logging (non-interactive)
+output.py     → TaskResult dataclass, Rich Live table TUI (interactive), Python logging
+                (non-interactive), strip_control_sequences() (shared sanitiser)
 notify.py     → macOS notifications via terminal-notifier (preferred) / osascript (fallback)
 ```
 
@@ -103,6 +104,95 @@ Reclaims Electron/editor caches mole's classifier structurally misses (`Service 
 - **`_is_safe_target`** refuses anything not ≥2 segments below `~/Library/Application Support`, and refuses symlinks — mirrors mole's `validate_path_for_deletion`.
 - Ships **`enabled = false`** (opt-in: it's `rm -rf` and reaches all users, like `pnpm`). Targets default to Notion + Zed; override with `[[editor_cache.apps]]` (`name`/`process`/`min_size_mb`/`targets`) in user config.
 
+### Fail-closed contracts (security audit run-1)
+
+Four gates were changed from fail-open to fail-closed. Each looks like an inconsequential
+default until you notice which direction it fails in; do not "simplify" them back.
+
+- **`Config.is_enabled()` returns `False` for an unknown key**, not `True`. Every caller
+  derives the key from a real `TaskDef` via `normalize_task_key()`, so a miss means the two
+  keyspaces diverged — which must never resolve to "run it". This is only safe *because*
+  keys are normalised at load: alone, it would stop a legitimately-enabled custom task with
+  a capitalised name from ever running. The two changes ship together or not at all.
+- **`normalize_task_key()` is applied once in `load_task_defs()`** — to default keys, user
+  keys, and `run.order` entries — so `tasks.py`'s `task_key` derivation is an identity
+  operation. Before, `[tasks.DockerPrune]` was stored raw, `is_enabled` missed, and
+  `enabled = false` was ignored while the dashboard cheerfully printed "disabled". Two names
+  normalising to one key is a `ValueError`, because otherwise the winner depends on TOML
+  table order.
+- **User field types are validated** (`_FIELD_TYPES` + `_check_field`) in *both* the override
+  branch and `_parse_task_def`. `enabled = "false"` — quoting a TOML boolean, the most common
+  TOML mistake — used to leave a truthy string and run the task anyway; `sudo = "false"`
+  *added* `sudo -n`. `bool` subclasses `int`, so `timeout = true` needs the explicit
+  `isinstance(value, bool)` rejection.
+- **`MAC_UPKEEP_<TASK>` is an allowlist of truthy strings**, not a denylist of falsy ones.
+  `off`, `disabled` and `""` previously all enabled the task.
+
+### require_file must distinguish "unset" from "resolved to nothing"
+
+`TaskDef.require_file_declared` records that the template was non-empty *before* variable
+resolution. The old guard `if td.require_file and not Path(...).is_file()` short-circuited on
+the empty string, so `brew_bundle` ran `--file=` — which Homebrew treats as absent, falling
+back to `$PWD/Brewfile`, evaluating it as Ruby and then uninstalling everything it does not
+list. It also failed on every run for every user with no Brewfile, burning retry backoff and
+a notification each time. Related: `_discover_brewfile()` must never regain a CWD-relative
+candidate, and `run_task` passes `cwd="/"` so no task can be steered by the caller's
+directory (launchd already provides `/`).
+
+### git_sync: repository config is untrusted input
+
+A repo's own `.git/config` can make git execute a command, and `safe.directory` does not
+help — it keys on ownership, and an extracted archive is owned by the invoking user.
+`_run_git` therefore prepends `_trusted_overrides()` to **every** call, not just `pull`:
+`git status --porcelain`, the `skip_dirty` *safety* check, is itself enough to trigger
+`core.fsmonitor` and filter drivers. All sinks below were verified to fire on git 2.55.
+
+- `_STATIC_OVERRIDES` are unconditional: `core.fsmonitor=`, `core.hooksPath=/dev/null`,
+  `protocol.ext.allow=never` (a repo can set `protocol.ext.allow=always` and get `ext::`
+  back), `protocol.file.allow=never` (the only working block for `remote.<n>.uploadpack`,
+  which a per-name `-c` override does *not* beat), and `protocol.git.allow=never` (the only
+  working block for `core.gitProxy` — `-c core.gitProxy=` does **not** disable it).
+- **Multi-valued and single-valued keys need opposite treatment, and confusing them is a
+  live outage.** `_INHERITED_LIST_KEYS` (`credential.helper`) is reset with an empty entry —
+  which for a list key means "discard what git accumulated" — then the user's global/system
+  values are appended back. A bare reset without the re-add would break nearly every macOS
+  user, because Homebrew git ships `credential.helper = osxkeychain` at *system* scope, and
+  the helper fires on an HTTP 401 despite `GIT_ASKPASS` and `GIT_TERMINAL_PROMPT`.
+  `_INHERITED_SCALAR_KEYS` (`core.sshCommand`) must instead be **set** to the user's value
+  or to an explicit default. An empty entry there is not a reset: git execs the empty string,
+  and every SSH remote fails with `error: cannot run :` on every run — a retry storm for the
+  default configuration, which is the one the README documents.
+- **Known residual, do not claim otherwise:** `filter.<driver>.clean` from a planted
+  `.gitattributes` still executes on `status`. Driver names are arbitrary, so no fixed `-c`
+  set covers them, and git has no "ignore repo-local config" switch. Enrolment discipline is
+  the real control. Before adding a "this is the only remaining sink" claim anywhere, re-derive
+  the list against the installed git — `core.gitProxy` was missed on the first pass precisely
+  because the sink list was taken as complete rather than re-tested.
+- `_trusted_cache` is process-global; `tests/conftest.py` seeds it with the static half so
+  argv is deterministic and the `git config` probes are not caught by tests that patch
+  `git_sync.subprocess.run`. Tests exercising the inherited half reset it to `None`.
+
+### Untrusted text is never Rich markup
+
+`output.py` renders subprocess and remote-derived text as a literal `rich.text.Text`, never
+interpolated into a markup string — in `task_debug` *and* in `summary`'s failure detail. A
+bracketed path like `[/usr/local]` raises `MarkupError` (which used to abort the run and
+leave the cursor hidden, since `Live.__exit__` never ran), and `[link=…]` renders a real
+OSC-8 hyperlink with attacker-chosen target and anchor text inside our own failure summary.
+`strip_control_sequences()` in `output.py` is the single sanitiser for both `tasks.py` and
+`git_sync.py`; it covers all escape sequences plus stray C0/C1 characters, not just SGR
+colour codes. It deliberately does **not** touch `[` — markup is handled by `Text`, not by
+escaping.
+
+### No single task may abort the run
+
+`run_task` catches `OSError` (a shim whose shebang interpreter vanished is the routine
+trigger), `run_all_tasks` wraps each task in a catch-all, and `cli.run` passes its own
+`results` list in so `output.summary()` and `notify()` still describe whatever completed.
+Under launchd the notification is the user's only feedback channel, and `summary()` is what
+exits the Rich `Live` context. The dead `CalledProcessError` branch was removed — `check=True`
+is never passed, so it read as coverage that did not exist.
+
 ### sudo + HOME/USER/LOGNAME
 
 `sudo -n` with full path `$BREW_PREFIX/bin/mo`. Sudoers `env_keep += "HOME USER LOGNAME"`. The `sudo` field in `TaskDef` exists instead of embedding `sudo` in the command so that: (a) dry-run can skip sudo, (b) `detect` infers the correct binary, (c) `mac-upkeep setup` can generate sudoers rules.
@@ -139,7 +229,7 @@ env USER=root MOLE_DRY_RUN=1 mo optimize | grep -A2 'Permission Repair' # enters
 - **Config/state paths are import-time constants**, so setting `XDG_CONFIG_HOME` from a fixture is too late — patch `mac_upkeep.config.DEFAULT_CONFIG_PATH`, `mac_upkeep.cli.DEFAULT_CONFIG_PATH`, `tasks._STATE_FILE` and `tasks._RETRY_FILE` objects directly. `Config.load(path=None)` resolves `DEFAULT_CONFIG_PATH` **at call time**; as a default argument it would bind at def time and silently ignore every patch.
 - **`git_sync` SSH auth under launchd** relies on `~/.ssh/config` `IdentityAgent` (path-based, e.g. 1Password socket). `SSH_AUTH_SOCK` env vars are NOT inherited by LaunchAgents, so env-based agent forwarding won't work here — the `IdentityAgent` directive is the supported path.
 - **`git_sync` forces `GIT_TERMINAL_PROMPT=0` and defaults `GIT_ASKPASS=/usr/bin/true`** (user-set `GIT_ASKPASS` is respected) — fail-fast on auth misconfiguration instead of stalling to the 60 s subprocess timeout. A genuine stall (network/server hang) still hits the timeout, so `_run_git` catches `subprocess.TimeoutExpired` and returns a synthetic `CompletedProcess(returncode=124, stderr="timed out after {timeout}s")`. That marks only the affected repo failed and lets the loop continue — a hung pull cannot abort the whole run (which would otherwise skip `output.summary()`/`notify()` and later tasks).
-- **`git_sync` failure reasons belong in the aggregate `TaskResult`, not only `output.task_debug()`** — debug output is suppressed without `--debug`, so the log recorded `13 failed: <names>` with no cause, which is not diagnosable after the fact. `_format_failures()` groups repos by reason because the common case is one shared cause (a network drop failing every repo at once); it caps names per group and truncates long messages so a 16-repo outage cannot blow up the log line or the notification body.
+- **`git_sync` failure reasons belong in the aggregate `TaskResult`, not only `output.task_debug()`** — debug output is suppressed without `--debug` on the non-interactive path (`Output.debug` is set but not consulted by the interactive branch, so a TTY always sees it), so the log recorded `13 failed: <names>` with no cause, which is not diagnosable after the fact. `_format_failures()` groups repos by reason because the common case is one shared cause (a network drop failing every repo at once); it caps names per group and truncates long messages so a 16-repo outage cannot blow up the log line or the notification body.
 
 ## Release Process
 

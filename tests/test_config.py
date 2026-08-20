@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from mac_upkeep.config import (
     Config,
     TaskDef,
+    _discover_brewfile,
     _load_defaults,
     load_default_task_names,
     load_task_defs,
+    normalize_task_key,
     resolve_variables,
 )
 
@@ -404,7 +409,9 @@ def test_load_editor_cache_apps_absent_defaults_empty(tmp_path):
 def test_config_is_enabled():
     config = Config.load(Path("/nonexistent/config.toml"))
     assert config.is_enabled("brew_update") is True
-    assert config.is_enabled("unknown_task") is True  # unknown defaults to True
+    # Fails CLOSED. Callers derive the key from a real TaskDef via normalize_task_key,
+    # so a miss means the keyspaces diverged -- which must never resolve to "run it".
+    assert config.is_enabled("unknown_task") is False
 
 
 def test_config_get_frequency():
@@ -493,3 +500,104 @@ def test_frequency_env_override(monkeypatch):
     monkeypatch.setenv("MAC_UPKEEP_GCLOUD_FREQUENCY", "weekly")
     config = Config.load(Path("/nonexistent/config.toml"))
     assert config.get_frequency("gcloud") == "weekly"
+
+
+# --- F-03: Brewfile discovery must not follow the working directory ---
+
+
+def test_discover_brewfile_ignores_cwd(tmp_path, monkeypatch):
+    """A Brewfile in the process CWD is never auto-discovered.
+
+    `brew bundle` instance_evals a Brewfile as Ruby and this project runs
+    `cleanup --force`, so a CWD-relative candidate made any checkout a developer
+    happened to be sitting in both a code-execution and a mass-uninstall vector.
+    """
+    (tmp_path / "Brewfile").write_text('brew "wget"\n')
+    monkeypatch.chdir(tmp_path)
+    # No Brewfile at either absolute candidate (conftest isolates HOME/XDG).
+    assert _discover_brewfile() is None
+
+
+def test_discover_brewfile_still_finds_absolute_locations(tmp_path, monkeypatch):
+    """The legitimate absolute candidates keep working."""
+    xdg = Path(os.environ["XDG_CONFIG_HOME"])
+    (xdg / "Brewfile").write_text('brew "wget"\n')
+    monkeypatch.chdir(tmp_path)
+    assert _discover_brewfile() == str(xdg / "Brewfile")
+
+
+# --- F-09: controls that disable a task must fail closed ---
+
+
+def test_normalize_task_key_matches_tasks_py_derivation():
+    """One keyspace: config keys and tasks.py's lookup key must agree."""
+    assert normalize_task_key("DockerPrune") == "dockerprune"
+    assert normalize_task_key("Docker Prune") == "docker_prune"
+    assert normalize_task_key("brew_update") == "brew_update"
+
+
+def test_quoted_boolean_enabled_is_rejected(tmp_path):
+    """`enabled = "false"` used to leave a truthy string and ENABLE the task."""
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[tasks.editor_cache]\nenabled = "false"\n')
+    with pytest.raises(ValueError, match="must be bool"):
+        Config.load(cfg)
+
+
+def test_quoted_boolean_sudo_is_rejected(tmp_path):
+    """`sudo = "false"` used to be truthy and ADD `sudo -n` to the argv."""
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[tasks.brew_update]\nsudo = "false"\n')
+    with pytest.raises(ValueError, match="must be bool"):
+        Config.load(cfg)
+
+
+def test_boolean_timeout_is_rejected(tmp_path):
+    """bool subclasses int, so `timeout = true` must be caught explicitly."""
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[tasks.brew_update]\ntimeout = true\n")
+    with pytest.raises(ValueError, match="must be int"):
+        Config.load(cfg)
+
+
+def test_custom_task_fields_are_validated(tmp_path):
+    """_parse_task_def gets the same validation as the override branch."""
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[tasks.custom]\ncommand = "echo hi"\nenabled = "false"\n')
+    with pytest.raises(ValueError, match="must be bool"):
+        Config.load(cfg)
+
+
+def test_capitalised_task_key_can_be_disabled(tmp_path):
+    """`[tasks.DockerPrune]` + `enabled = false` must actually disable the task.
+
+    tasks.py lowercases the task name to build its lookup key, so a raw-cased key
+    used to miss `is_enabled` entirely and the command ran anyway.
+    """
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[tasks.DockerPrune]\ncommand = "docker system prune -f"\nenabled = false\n')
+    config = Config.load(cfg)
+    assert "dockerprune" in config.task_defs
+    assert config.is_enabled("dockerprune") is False
+    assert "dockerprune" in config.run_order
+
+
+def test_task_name_collision_is_rejected(tmp_path):
+    """Two names normalising to one key would make the winner table-order dependent."""
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[tasks."Docker Prune"]\ncommand = "a"\n\n[tasks.docker_prune]\ncommand = "b"\n')
+    with pytest.raises(ValueError, match="normalise to"):
+        Config.load(cfg)
+
+
+def test_env_override_uses_truthy_allowlist(monkeypatch):
+    """`off`/`disabled`/`""` used to fall through the denylist and ENABLE the task."""
+    for value in ("off", "disabled", "", "nope"):
+        monkeypatch.setenv("MAC_UPKEEP_UV", value)
+        config = Config.load(Path("/nonexistent/config.toml"))
+        assert config.is_enabled("uv") is False, value
+
+    for value in ("true", "1", "yes", "ON"):
+        monkeypatch.setenv("MAC_UPKEEP_UV", value)
+        config = Config.load(Path("/nonexistent/config.toml"))
+        assert config.is_enabled("uv") is True, value

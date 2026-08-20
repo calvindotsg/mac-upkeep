@@ -24,6 +24,8 @@ from pathlib import Path
 
 import pytest
 
+from mac_upkeep import git_sync
+
 # Captured at collection time, before any fixture rewrites HOME, so isolation
 # assertions can compare against the developer's genuine home directory.
 REAL_HOME = Path(os.path.expanduser("~"))
@@ -58,5 +60,15 @@ def isolate_user_environment(tmp_path_factory, monkeypatch):
     monkeypatch.setattr("mac_upkeep.tasks._STATE_DIR", state_dir)
     monkeypatch.setattr("mac_upkeep.tasks._STATE_FILE", state_dir / "last-run.json")
     monkeypatch.setattr("mac_upkeep.tasks._RETRY_FILE", state_dir / "retry-state.json")
+
+    # git_sync derives part of its `-c` hardening from the developer's real global
+    # and system git config, which would make argv machine-dependent and would also
+    # be intercepted by tests that patch git_sync.subprocess.run. Seed the cache with
+    # the deterministic static half; tests that exercise the inherited half reset it
+    # to None themselves.
+    monkeypatch.setattr(
+        "mac_upkeep.git_sync._trusted_cache",
+        [arg for key in git_sync._STATIC_OVERRIDES for arg in ("-c", key)],
+    )
 
     yield root
