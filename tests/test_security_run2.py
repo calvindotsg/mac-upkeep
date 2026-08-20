@@ -28,8 +28,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from mac_upkeep import git_sync
 from mac_upkeep.config import Config
-from mac_upkeep.git_sync import _run_git, _trusted_overrides, run_git_sync
+from mac_upkeep.git_sync import _run_git, _sync_repo, _trusted_overrides, run_git_sync
 from mac_upkeep.output import Output, TaskResult
 
 # --------------------------------------------------------------------------- helpers
@@ -393,3 +394,230 @@ def test_task_done_sanitises_the_task_name(tmp_path, monkeypatch, caplog):
         out.task_done(TaskResult("task\x1b]0;PWNED\x07x", "skipped", reason="disabled"))
     assert "\x1b" not in caplog.text
     assert "taskx" in caplog.text
+
+
+# -------------------------------- F2-06, remaining half: the per-URL / per-remote families
+#
+# These key families are MORE SPECIFIC than the generic keys pinned by `-c`, so they win.
+# The URL or remote name is part of the key name, so no fixed override set can enumerate
+# them; the only closure is to read the repository's own config and refuse to enter it.
+# `git config --list` parses files and executes nothing, so the pre-flight is not itself
+# a new sink.
+
+_PLANTED_URL = "https://127.0.0.1:9/x.git"
+
+
+def _bare_repo(tmp_path, name: str = "r") -> str:
+    repo = tmp_path / name
+    repo.mkdir()
+    p = str(repo)
+    _plain_git(p, ["init", "-q", "-b", "main"])
+    return p
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        (f"http.{_PLANTED_URL}.proxy", "http://127.0.0.1:1"),
+        ("http.https://127.0.0.1:9/.proxy", "http://127.0.0.1:1"),
+        (f"http.{_PLANTED_URL}.sslVerify", "false"),
+        ("remote.origin.proxy", "http://127.0.0.1:1"),
+    ],
+)
+def test_per_url_and_per_remote_transport_keys_are_refused(tmp_path, monkeypatch, key, value):
+    if not _git_isolated(monkeypatch):  # pragma: no cover
+        pytest.skip("git not available")
+    monkeypatch.setattr("mac_upkeep.git_sync._trusted_cache", None)
+    p = _bare_repo(tmp_path)
+
+    # PREFLIGHT: without the key the repo passes this gate and reaches a later one.
+    status, reason = _sync_repo(p, skip_dirty=True)
+    assert "unsafe repo config" not in reason, reason
+
+    _plain_git(p, ["config", key, value])
+    status, reason = _sync_repo(p, skip_dirty=True)
+    assert status == "skipped"
+    assert "unsafe repo config" in reason
+    assert key.split(".")[-1].lower() in reason.lower()
+
+
+def test_generic_pin_really_is_insufficient_for_the_per_url_form(tmp_path, monkeypatch):
+    """The reason the refusal exists: `-c http.proxy=` does NOT beat `http.<url>.proxy`.
+
+    If this ever starts failing, git's precedence changed and the refusal could be
+    reconsidered -- until then, shipping only the generic pin is false closure.
+    """
+    if not _git_isolated(monkeypatch):  # pragma: no cover
+        pytest.skip("git not available")
+    monkeypatch.setattr("mac_upkeep.git_sync._trusted_cache", None)
+    p = _bare_repo(tmp_path)
+    _plain_git(p, ["config", f"http.{_PLANTED_URL}.proxy", "http://127.0.0.1:1"])
+
+    r = _run_git(p, ["config", "--get-urlmatch", "http.proxy", _PLANTED_URL])
+    assert r.stdout.strip() == "http://127.0.0.1:1", "generic pin now wins; revisit the refusal"
+
+
+def test_worktree_scoped_key_is_refused(tmp_path, monkeypatch):
+    """`git config --local --list` does NOT show this scope; `--show-scope` does."""
+    if not _git_isolated(monkeypatch):  # pragma: no cover
+        pytest.skip("git not available")
+    monkeypatch.setattr("mac_upkeep.git_sync._trusted_cache", None)
+    p = _bare_repo(tmp_path)
+    _plain_git(p, ["config", "extensions.worktreeConfig", "true"])
+    _plain_git(p, ["config", "--worktree", f"http.{_PLANTED_URL}.proxy", "http://127.0.0.1:1"])
+
+    # The scope really is invisible to --local, which is why _REPO_SCOPES exists.
+    assert "proxy" not in _plain_git(p, ["config", "--local", "--list"]).stdout
+
+    assert "unsafe repo config" in _sync_repo(p, skip_dirty=True)[1]
+
+
+def test_included_file_key_is_refused(tmp_path, monkeypatch):
+    """`include.path` values are reported under the including file's scope."""
+    if not _git_isolated(monkeypatch):  # pragma: no cover
+        pytest.skip("git not available")
+    monkeypatch.setattr("mac_upkeep.git_sync._trusted_cache", None)
+    p = _bare_repo(tmp_path)
+    extra = tmp_path / "extra.cfg"
+    extra.write_text('[http "https://inc.example/"]\n\tproxy = http://127.0.0.1:1\n')
+    _plain_git(p, ["config", "include.path", str(extra)])
+
+    assert "unsafe repo config" in _sync_repo(p, skip_dirty=True)[1]
+
+
+def test_the_users_own_global_config_does_not_refuse_the_repo(tmp_path, monkeypatch):
+    """The config owner is not the attacker. Only repo-controlled scopes are checked."""
+    if not _git_isolated(monkeypatch):  # pragma: no cover
+        pytest.skip("git not available")
+    monkeypatch.setattr("mac_upkeep.git_sync._trusted_cache", None)
+    global_cfg = tmp_path / "gitconfig"
+    global_cfg.write_text('[http "https://corp.example/"]\n\tproxy = http://corp:3128\n')
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_cfg))
+    p = _bare_repo(tmp_path)
+
+    assert "unsafe repo config" not in _sync_repo(p, skip_dirty=True)[1]
+
+
+def test_git_lfs_repositories_are_not_refused(tmp_path, monkeypatch):
+    """Scoped narrowly on purpose: `filter.*` would refuse every git-lfs repository."""
+    if not _git_isolated(monkeypatch):  # pragma: no cover
+        pytest.skip("git not available")
+    monkeypatch.setattr("mac_upkeep.git_sync._trusted_cache", None)
+    p = _bare_repo(tmp_path)
+    _plain_git(p, ["config", "filter.lfs.clean", "git-lfs clean -- %f"])
+    _plain_git(p, ["config", "filter.lfs.smudge", "git-lfs smudge -- %f"])
+    _plain_git(p, ["config", "remote.origin.url", "https://example.invalid/x.git"])
+
+    assert "unsafe repo config" not in _sync_repo(p, skip_dirty=True)[1]
+
+
+def test_unreadable_config_fails_closed(tmp_path, monkeypatch):
+    """ "Cannot tell" must not resolve to "enter it anyway"."""
+    monkeypatch.setattr(
+        "mac_upkeep.git_sync._run_git",
+        lambda path, args, **kw: (
+            _cp(returncode=0, stdout="true\n") if "rev-parse" in args else _cp(returncode=1)
+        ),
+    )
+    status, reason = _sync_repo("/anywhere", skip_dirty=True)
+    assert status == "skipped"
+    assert "unsafe repo config" in reason
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "refused"),
+    [
+        # The whole per-URL http namespace, not just the keys the audit happened to
+        # name. sslCAInfo would have been the next miss: an attacker CA defeats
+        # verification exactly as sslVerify=false does.
+        (f"http.{_PLANTED_URL}.sslCAInfo", "/tmp/evil-ca.pem", True),
+        (f"http.{_PLANTED_URL}.extraHeader", "Authorization: Bearer x", True),
+        ("remote.origin.proxyAuthMethod", "basic", True),
+        # Two-component keys have no subsection: they are handled as inherited
+        # scalars and must NOT trigger a refusal, or every repo with a tweak is lost.
+        ("http.postBuffer", "524288000", False),
+        ("http.sslVerify", "false", False),
+        ("http.proxy", "http://127.0.0.1:1", False),
+        # Ordinary remote configuration must survive.
+        ("remote.origin.url", "https://example.invalid/x.git", False),
+        ("remote.origin.tagOpt", "--no-tags", False),
+    ],
+)
+def test_refusal_pattern_boundaries(tmp_path, monkeypatch, key, value, refused):
+    if not _git_isolated(monkeypatch):  # pragma: no cover
+        pytest.skip("git not available")
+    monkeypatch.setattr("mac_upkeep.git_sync._trusted_cache", None)
+    p = _bare_repo(tmp_path)
+    _plain_git(p, ["config", key, value])
+    reason = _sync_repo(p, skip_dirty=True)[1]
+    assert ("unsafe repo config" in reason) is refused, reason
+
+
+# --- the structural half: a repository cannot set an environment variable ---
+
+
+def test_no_proxy_is_set_when_the_user_has_no_proxy(monkeypatch):
+    monkeypatch.setattr("mac_upkeep.git_sync._trusted_cache", None)
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", lambda *a, **k: _cp(returncode=1))
+    for var in ("http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "ALL_PROXY"):
+        monkeypatch.delenv(var, raising=False)
+    env = git_sync._build_env()
+    assert env["NO_PROXY"] == "*"
+    assert env["no_proxy"] == "*"
+
+
+def test_no_proxy_is_not_set_over_a_users_own_git_proxy(monkeypatch):
+    """Never blanket a legitimate corporate proxy -- that is the silent-breakage class."""
+    monkeypatch.setattr("mac_upkeep.git_sync._trusted_cache", None)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["git", "config", "--global"] and cmd[-1] == "http.proxy":
+            return _cp(returncode=0, stdout="http://corp.proxy:3128\n")
+        return _cp(returncode=1)
+
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", fake_run)
+    assert "NO_PROXY" not in git_sync._build_env()
+
+
+@pytest.mark.parametrize("var", ["http_proxy", "https_proxy", "all_proxy", "HTTPS_PROXY"])
+def test_no_proxy_is_not_set_over_a_users_env_proxy(monkeypatch, var):
+    monkeypatch.setattr("mac_upkeep.git_sync._trusted_cache", None)
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", lambda *a, **k: _cp(returncode=1))
+    monkeypatch.setenv(var, "http://corp.proxy:3128")
+    assert "NO_PROXY" not in git_sync._build_env()
+
+
+def test_no_proxy_defeats_a_per_url_proxy_without_the_refusal(tmp_path, monkeypatch):
+    """Independent of _unsafe_repo_config: proven at the _run_git layer.
+
+    This is the part that does not depend on the key pattern being complete, which is
+    why it is worth having on top of the refusal.
+    """
+    if not _git_isolated(monkeypatch):  # pragma: no cover
+        pytest.skip("git not available")
+    for var in ("http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "ALL_PROXY"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr("mac_upkeep.git_sync._trusted_cache", None)
+    p = _bare_repo(tmp_path)
+    url = "https://127.0.0.1:9/x.git"
+    _plain_git(p, ["config", f"http.{url}.proxy", "http://127.0.0.1:1"])
+
+    # PREFLIGHT: the proxy really is honoured without the block.
+    assert "port 1" in _plain_git(p, ["ls-remote", url]).stderr
+
+    assert "port 9" in _run_git(p, ["ls-remote", url]).stderr, "proxy was still used"
+
+
+def test_refusal_is_a_skip_not_a_failure(tmp_path, monkeypatch):
+    """A permanently-refused repo must stay quiet, not notify on every scheduled run."""
+    if not _git_isolated(monkeypatch):  # pragma: no cover
+        pytest.skip("git not available")
+    monkeypatch.setattr("mac_upkeep.git_sync._trusted_cache", None)
+    p = _bare_repo(tmp_path, "planted")
+    _plain_git(p, ["config", f"http.{_PLANTED_URL}.proxy", "http://127.0.0.1:1"])
+    output = MagicMock()
+
+    result = run_git_sync(_config([p]), output, dry_run=False)
+    assert result.status == "ok"  # skipped repos do not fail the task
+    assert result.reason == "1 skipped"
+    assert any("unsafe repo config" in c[0][0] for c in output.task_debug.call_args_list)
