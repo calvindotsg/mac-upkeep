@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 import subprocess
 from typing import TYPE_CHECKING
 
@@ -19,10 +20,35 @@ def _strip_ansi(text: str) -> str:
     return strip_control_sequences(text)
 
 
+# Every source of proxy configuration git actually consults, other than repository
+# config: these environment variables, and `http.proxy` at any scope. libcurl does not
+# read ~/.curlrc (only the curl binary does) and git does not consult macOS system
+# proxy settings, so this list is complete rather than illustrative.
+_PROXY_ENV_VARS = ("http_proxy", "https_proxy", "all_proxy")
+
+
 def _build_env() -> dict[str, str]:
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
     env.setdefault("GIT_ASKPASS", "/usr/bin/true")
+
+    # Proxy redirection is the one part of this that can be closed STRUCTURALLY rather
+    # than by naming keys, and structural beats enumerated: a repository cannot set an
+    # environment variable. curl consults NO_PROXY on every request, and `NO_PROXY=*`
+    # was verified on git 2.55 to defeat BOTH `http.<url>.proxy` and
+    # `remote.<name>.proxy` -- the two forms no `-c` override can reach. (`-c
+    # http.noProxy=*` does nothing; git 2.55 has no such key.)
+    #
+    # Applied ONLY when the user has no proxy of their own. Blanketing NO_PROXY over a
+    # legitimate corporate proxy would break git_sync for exactly the people who need
+    # it -- the silent-breakage class this module has already been bitten by twice.
+    # Those users lose nothing: _unsafe_repo_config refuses the same repositories
+    # regardless, which is why this is defence in depth and not the control itself.
+    if "http.proxy=" in _trusted_overrides() and not any(
+        env.get(v) or env.get(v.upper()) for v in _PROXY_ENV_VARS
+    ):
+        env["NO_PROXY"] = "*"
+        env["no_proxy"] = "*"
     return env
 
 
@@ -99,6 +125,39 @@ _INHERITED_SCALAR_KEYS = {
     "http.proxy": "",
     "http.sslVerify": "true",
 }
+
+# The `-c` overrides above cannot reach these. `http.<url>.*` is resolved by urlmatch
+# with most-specific-wins, and `remote.<name>.proxy` is keyed by remote name, so both
+# beat the generic keys and neither can be enumerated -- the URL or remote name is part
+# of the key name. Verified on git 2.55, in all three forms (exact URL, prefix URL, and
+# per-remote). So a repository declaring one is REFUSED rather than neutralised.
+#
+# This matches the WHOLE per-URL http namespace rather than the individual keys that
+# happened to be reported. Sonar's write-up of this attack class against git
+# integrations is explicit that enumerating safe directives does not work -- "it would
+# be very hard to establish a list of 'safe' configuration directives. Various other
+# ways to force the hidden execution of commands with a local configuration would still
+# exist" -- and this file has now been wrong about the completeness of a key list
+# twice. `http.<url>.sslCAInfo` alone would have been the next miss: it substitutes an
+# attacker CA and defeats verification exactly as `sslVerify=false` does.
+#
+# Still deliberately narrow in the other direction: `remote.<name>.*` matches only the
+# proxy keys, because `remote.<name>.url` and `.fetch` are ordinary, and `filter.*` is
+# not matched at all because that would refuse every git-lfs repository. Enrolment is
+# what carries the residual, and the README says so.
+#
+# Case-insensitive: git lowercases the section and the final key component but preserves
+# the subsection, so `http.https://EXAMPLE.com/.proxy` is listed verbatim. Unanchored at
+# the end, so `remote.<n>.proxyAuthMethod` is covered without naming it. `http.proxy` and
+# `http.sslVerify` do NOT match -- two components, no subsection -- and are handled as
+# inherited scalars above.
+_UNSAFE_LOCAL_KEY = re.compile(r"http\..+\..+|remote\..+\.proxy", re.I)
+
+# Scopes a planted repository controls. `--local` alone is NOT enough: a repo that sets
+# `extensions.worktreeConfig` gets a second file, `.git/config.worktree`, which
+# `git config --local --list` does not show (verified). `include.path` directives are
+# reported under the scope of the file that included them, so they are covered.
+_REPO_SCOPES = frozenset({"local", "worktree"})
 
 _trusted_cache: list[str] | None = None
 
@@ -177,6 +236,31 @@ def _run_git(path: str, args: list[str], *, timeout: int = 60) -> subprocess.Com
         )
 
 
+def _unsafe_repo_config(path: str) -> str:
+    """Name the first repo-scoped key no `-c` override can neutralise, else "".
+
+    `git config --list` parses configuration files and nothing else -- no work tree,
+    no filters, no fsmonitor -- so the pre-flight cannot itself be the thing that runs
+    code. The `-z` form is used because a config VALUE may contain a newline; keys
+    cannot contain one, and no key or value may contain NUL.
+
+    Fails CLOSED. Every git repository has at least `core.repositoryformatversion`, so
+    a non-zero exit here means the config could not be read at all, and "cannot tell"
+    must not resolve to "enter it anyway". The result is a skip, not a failure, so an
+    unreadable repository cannot drive the retry backoff.
+    """
+    r = _run_git(path, ["config", "--list", "--show-scope", "-z"], timeout=10)
+    if r.returncode != 0:
+        return "<unreadable config>"
+    # Records are `scope NUL key LF value NUL`, so the split alternates scope / entry.
+    fields = r.stdout.split("\0")
+    for i in range(0, len(fields) - 1, 2):
+        key = fields[i + 1].split("\n", 1)[0]
+        if fields[i] in _REPO_SCOPES and _UNSAFE_LOCAL_KEY.match(key):
+            return key
+    return ""
+
+
 def _resolve_paths(patterns: list[str], output: Output) -> list[str]:
     """Expand user paths and globs; emit debug lines for empty matches."""
     paths: list[str] = []
@@ -209,6 +293,13 @@ def _sync_repo(path: str, *, skip_dirty: bool) -> tuple[str, str]:
     r = _run_git(path, ["rev-parse", "--is-inside-work-tree"])
     if r.returncode != 0:
         return "skipped", "not a git repo"
+
+    # Before any network call: refuse outright what the `-c` overrides cannot cover.
+    # A skip rather than a failure, so a permanently-refused repository stays quiet
+    # instead of notifying on every scheduled run.
+    unsafe = _unsafe_repo_config(path)
+    if unsafe:
+        return "skipped", f"unsafe repo config: {unsafe}"
 
     r = _run_git(path, ["remote"])
     if r.returncode != 0 or not r.stdout.strip():
