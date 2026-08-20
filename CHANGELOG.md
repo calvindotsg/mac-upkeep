@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.0.4](https://github.com/calvindotsg/mac-upkeep/compare/v3.0.3...v3.0.4) (2026-08-20)
+
+
+### Bug Fixes
+
+* close six findings from security audit run-1 ([#53](https://github.com/calvindotsg/mac-upkeep/issues/53)) ([c83f865](https://github.com/calvindotsg/mac-upkeep/commit/c83f86587c435a07356639a06c26300a829d67cc))
+
+
+### CI/CD
+
+* harden the release pipeline against findings F-05, F-06 and F-11 ([#54](https://github.com/calvindotsg/mac-upkeep/issues/54)) ([1d1fb5f](https://github.com/calvindotsg/mac-upkeep/commit/1d1fb5fd2e99e0e0d9bc6bd72da34e244fce44f4))
+
 ## [3.0.3](https://github.com/calvindotsg/mac-upkeep/compare/v3.0.2...v3.0.3) (2026-08-17)
 
 
