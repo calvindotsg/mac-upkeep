@@ -12,27 +12,27 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      - uses: actions/create-github-app-token@v3
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         with:
           client-id: ${{ vars.RELEASE_PLEASE_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_PLEASE_PRIVATE_KEY }}
       - id: release
-        uses: googleapis/release-please-action@v5
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
 
       - name: Checkout release PR branch
         if: ${{ steps.release.outputs.pr && !steps.release.outputs.release_created }}
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ steps.app-token.outputs.token }}
           ref: release-please--branches--main
 
       - name: Setup uv
         if: ${{ steps.release.outputs.pr && !steps.release.outputs.release_created }}
-        uses: astral-sh/setup-uv@v10.0.1
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
 
       - name: Update uv.lock in release PR
         if: ${{ steps.release.outputs.pr && !steps.release.outputs.release_created }}
@@ -52,40 +52,125 @@ jobs:
             git push
           fi
 
-  bump-tap:
+  # Gate BOTH release_created consumers. release-please honours a `Release-As:`
+  # footer and short-circuits all version derivation, and squash merges put a
+  # contributor's own commit messages into the commit that lands on main -- so a
+  # merged PR can dictate the published version. An anchored semver regex alone
+  # does NOT help: the payload `Release-As: 99.0.0` produces the perfectly
+  # well-formed tag v99.0.0. The size of the jump is what gives it away.
+  verify-version:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/create-github-app-token@v3
-        id: app-token
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          client-id: ${{ vars.RELEASE_PLEASE_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_PLEASE_PRIVATE_KEY }}
-          repositories: homebrew-tap
-      - name: Dispatch formula update
-        uses: peter-evans/repository-dispatch@v4
+          fetch-depth: 0
+      - name: Refuse implausible version jumps
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || {
+            echo "::error::Refusing malformed tag: $TAG"; exit 1; }
+          new_major=${BASH_REMATCH[1]}; new_minor=${BASH_REMATCH[2]}; new_patch=${BASH_REMATCH[3]}
+
+          # Compare against the highest EXISTING release tag, not the manifest:
+          # by the time this job runs the release PR has merged, so
+          # .release-please-manifest.json already holds the new version and would
+          # always compare equal.
+          prev=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname \
+                 | grep -v -x -F "$TAG" | head -n1 || true)
+          if [[ -z "$prev" ]]; then
+            echo "No previous release tag; skipping jump check."
+            exit 0
+          fi
+          [[ "$prev" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || {
+            echo "::error::Unparseable previous tag: $prev"; exit 1; }
+          cur_major=${BASH_REMATCH[1]}; cur_minor=${BASH_REMATCH[2]}; cur_patch=${BASH_REMATCH[3]}
+
+          # Allowlist the three bumps release-please can actually produce, rather than
+          # bounding only upward major/minor movement -- a one-sided check accepts any
+          # version DECREASE and any patch jump, so `Release-As: 3.0.99` sails through.
+          if   (( new_major == cur_major + 1 && new_minor == 0 && new_patch == 0 )); then :
+          elif (( new_major == cur_major && new_minor == cur_minor + 1 && new_patch == 0 )); then :
+          elif (( new_major == cur_major && new_minor == cur_minor \
+                  && new_patch == cur_patch + 1 )); then :
+          else
+            echo "::error::Implausible bump $prev -> $TAG; a Release-As trailer may have been merged."
+            echo "::error::Expected one of: v$((cur_major + 1)).0.0, v${cur_major}.$((cur_minor + 1)).0, v${cur_major}.${cur_minor}.$((cur_patch + 1))"
+            exit 1
+          fi
+          echo "$prev -> $TAG is a normal bump."
+
+  # Build is separated from publish so that anything injected into the build
+  # environment cannot reach the OIDC credentials. `[build-system] requires` is
+  # unbounded and uv.lock does not cover build requirements at all, so six
+  # packages resolve fresh from the live index and then execute here. PyPA's own
+  # guidance: "only set the id-token: write permission in the job that does
+  # publishing... try to separate building from publishing".
+  build:
+    needs: [release-please, verify-version]
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - run: uv build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          token: ${{ steps.app-token.outputs.token }}
-          repository: calvindotsg/homebrew-tap
-          event-type: formula-update
-          client-payload: |-
-            {
-              "formula": "mac-upkeep",
-              "version": "${{ needs.release-please.outputs.tag_name }}",
-              "url": "https://github.com/calvindotsg/mac-upkeep/archive/refs/tags/${{ needs.release-please.outputs.tag_name }}.tar.gz",
-              "type": "python"
-            }
+          name: dist
+          path: dist/
+          if-no-files-found: error
 
   pypi-publish:
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    needs: build
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
       id-token: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1
-      - run: uv build
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+
+  bump-tap:
+    needs: [release-please, verify-version]
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          client-id: ${{ vars.RELEASE_PLEASE_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_PRIVATE_KEY }}
+          repositories: homebrew-tap
+      # Build the payload with jq rather than string interpolation, so payload
+      # STRUCTURE can never depend on tag content. A double quote is a legal git
+      # ref character, and an interpolated tag containing one produced malformed
+      # JSON that silently broke the tap bump.
+      - id: payload
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          json=$(jq -cn --arg tag "$TAG" '{
+            formula: "mac-upkeep",
+            version: $tag,
+            type: "python",
+            url: ("https://github.com/calvindotsg/mac-upkeep/archive/refs/tags/" + $tag + ".tar.gz")
+          }')
+          echo "json=$json" >> "$GITHUB_OUTPUT"
+      - name: Dispatch formula update
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          repository: calvindotsg/homebrew-tap
+          event-type: formula-update
+          client-payload: ${{ steps.payload.outputs.json }}

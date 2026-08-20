@@ -1,0 +1,42 @@
+# Reject a `Release-As:` trailer at the point it would enter the repository.
+#
+# squash_merge_commit_message is COMMIT_MESSAGES, so a squashed PR's body is the
+# contributor's own commit messages. release-please parses a `Release-As:` footer
+# and short-circuits all version derivation, so a merged benign-looking PR can
+# dictate the published version -- and PyPI never permits version reuse.
+#
+# An anchored semver check in release.yml is NOT sufficient on its own: the
+# payload `Release-As: 99.0.0` yields the perfectly well-formed tag v99.0.0.
+# release.yml's verify-version job catches the jump; this catches the trailer.
+name: pr-checks
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  no-release-as:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Reject Release-As trailers
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          # squash_merge_commit_title is COMMIT_OR_PR_TITLE, so for a multi-commit PR
+          # the squashed subject comes from the PR title -- which is not in git log.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          {
+            git log --format='%B' "$BASE..$HEAD"
+            printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY"
+          } > /tmp/release-as-scan.txt
+          if grep -qiE '^[[:space:]]*Release-As:' /tmp/release-as-scan.txt; then
+            echo "::error::A Release-As trailer overrides release-please version derivation. Remove it."
+            exit 1
+          fi
+          echo "No Release-As trailer found."
