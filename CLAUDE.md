@@ -406,25 +406,43 @@ Automated via release-please + homebrew-tap dispatch:
 4. Merge the release PR → GitHub release + tag created → `bump-tap` dispatches to homebrew-tap, `pypi-publish` publishes to PyPI
 5. Verify: check homebrew-tap Actions tab for successful formula update
 
-### Triaging a release PR: close AND snooze
+### Triaging a release PR: close it bare, and do NOT snooze it
 
-A release PR whose entries are all `ci:`/`chore:` is closed, not merged. `uv.lock` is a
-development lockfile and is not shipped in the wheel, `[dependency-groups] dev` is never
-installed by users, and if `src/` is untouched the published artifact would differ from
-its predecessor only in its version string -- which PyPI then makes permanent, since it
-never permits version reuse. Confirm it with `git diff <last-tag>..main` rather than
+A release PR whose entries are all `ci:`/`chore:`/`docs:` is closed, not merged. `uv.lock`
+is a development lockfile and is not shipped in the wheel, `[dependency-groups] dev` is
+never installed by users, and if `src/` is untouched the published artifact would differ
+from its predecessor only in its version string -- which PyPI then makes permanent, since
+it never permits version reuse. Confirm that with `git diff <last-tag>..main` rather than
 inferring it from the commit types.
 
-Closing it **bare is wrong**: release-please matches an existing release PR by head branch,
-so the next push to `main` opens an identical one. Add the **`autorelease: snooze`** label
-first. `Manifest.findSnoozedReleasePullRequests` (release-please `src/manifest.ts`) scans
-CLOSED pull requests for that label, and `maybeUpdateSnoozedPullRequest` leaves the PR alone
-while the release notes are unchanged; when a real `feat:`/`fix:` lands the notes change, so
-release-please reopens the PR and removes the label itself. The deferred entries roll into
-the next real release rather than being lost. Note that `docs:` is a changelog section here,
-so documenting the close is itself enough to reopen it.
+Close it and nothing else. The next push to `main` opens a fresh release PR carrying the
+accumulated entries; close that one too. Nothing is lost -- the entries land in the next
+release that has a real `feat:`/`fix:` in it.
 
-Never delete `release-please--branches--main` -- the snooze match is on that branch name.
+**`autorelease: snooze` looks like the tidy way to do this and breaks the release lane.**
+release-please documents the label, and the finding half works: the
+`findSnoozedReleasePullRequests` scan in `src/manifest.ts` does match a CLOSED PR carrying
+it, and leaves it alone while the release notes are unchanged. The **wake** path is what fails. Once
+the notes change, `updateExistingPullRequest` force-pushes `release-please--branches--main`
+and then *creates* a pull request from it -- which succeeds, because the old one is closed --
+and only afterwards tries to flip the old one back to open. GitHub refuses:
+
+```
+updated code for 72, but update requested for 68
+release-please failed: Validation Failed: {"resource":"PullRequest","code":"custom",
+"field":"state","message":"state cannot be changed. There is already an open pull
+request from release-please--branches--main to main."}
+```
+
+The action then exits non-zero, so the `release-please` job is red -- and `verify-version`,
+`build`, `pypi-publish` and `bump-tap` all key off its outputs, so on a real release every
+one of them is skipped and nothing publishes. Verified on run 32387149577, which failed
+exactly this way; removing the label from the closed PR and re-running that same run turned
+it green with no other change. Pinned at `release-please-action` v5.0.0.
+
+So: bare close. A duplicate release PR to close again is the cheaper failure by far.
+
+Never delete `release-please--branches--main` -- release-please reuses that branch.
 
 ### The formula's dependency pins do not come from `uv.lock`
 
