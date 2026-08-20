@@ -14,14 +14,21 @@ logger = logging.getLogger("mac_upkeep")
 # The old sanitiser matched SGR colour codes only, which leaves OSC-8 hyperlinks,
 # OSC-52 clipboard writes, cursor movement and bare C1 controls intact. Match every
 # escape sequence, then drop any remaining control character except tab and newline.
+#
+# The OSC body is `[^\x07\x1b]*`, NOT `.*?` under DOTALL. A lazy dot has to rescan to
+# end-of-input for every unterminated `\x1b]` introducer, which is quadratic: a git
+# remote could send 80 KB of them and hang the run for ~12 s (measured) after the
+# subprocess timeout had already passed. The negated class cannot backtrack, so an
+# unterminated introducer fails in O(1) and is then swept up by the Fe branch below,
+# which already covers `\x1b]` as a bare two-character escape.
 _ESCAPE_SEQUENCES = re.compile(
     r"""
-      \x1b \] .*? (?: \x07 | \x1b\\ )   # OSC ... terminated by BEL or ST
-    | \x1b \[ [0-?]* [ -/]* [@-~]        # CSI ... parameters, intermediates, final
-    | \x1b [@-Z\\-_]                     # other two-character Fe escapes
-    | \x1b [ -/]* [0-~]                  # nF / independent escapes
+      \x1b \] [^\x07\x1b]* (?: \x07 | \x1b\\ )  # OSC ... terminated by BEL or ST
+    | \x1b \[ [0-?]* [ -/]* [@-~]              # CSI ... params, intermediates, final
+    | \x1b [@-Z\\-_]                           # other two-character Fe escapes
+    | \x1b [ -/]* [0-~]                        # nF / independent escapes
     """,
-    re.VERBOSE | re.DOTALL,
+    re.VERBOSE,
 )
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 

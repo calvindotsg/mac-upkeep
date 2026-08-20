@@ -11,6 +11,7 @@ from mac_upkeep.git_sync import (
     _format_failures,
     _resolve_paths,
     _run_git,
+    _strip_ansi,
     _trusted_overrides,
     run_git_sync,
 )
@@ -423,7 +424,6 @@ def test_trusted_overrides_drops_repo_helper_but_keeps_global(monkeypatch):
     pairs = [(args[i + 1]) for i, a in enumerate(args) if a == "-c"]
     # Reset comes first, inherited value after, so git's list ends up as the user's.
     assert pairs.index("credential.helper=") < pairs.index("credential.helper=osxkeychain")
-    assert "core.sshCommand=" in pairs
 
 
 def test_trusted_overrides_survives_missing_git(monkeypatch):
@@ -467,3 +467,77 @@ def test_remote_message_control_sequences_are_stripped(tmp_path, monkeypatch):
     assert "\x1b" not in result.reason
     assert "]8;" not in result.reason
     assert "fatal: click denied" in result.reason
+
+
+def test_scalar_key_is_never_reset_to_the_empty_string(monkeypatch):
+    """core.sshCommand must never be emitted empty -- git execs it, it is not a reset.
+
+    Regression: it was originally handled like credential.helper. For a multi-valued
+    key an empty entry resets the accumulated list; for a single-valued key it IS the
+    value, so git tried to fork "" and EVERY ssh remote failed with
+    `error: cannot run : No such file or directory` -- on every run, for every user
+    without a global core.sshCommand, which is the documented default setup.
+    """
+    monkeypatch.setattr("mac_upkeep.git_sync._trusted_cache", None)
+    # Nothing configured anywhere: the case that broke.
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", lambda *a, **k: _cp(returncode=1))
+    args = _trusted_overrides()
+
+    values = [args[i + 1] for i, a in enumerate(args) if a == "-c"]
+    ssh = [v for v in values if v.startswith("core.sshCommand=")]
+    assert ssh == ["core.sshCommand=ssh"], ssh
+    assert "core.sshCommand=" not in values
+
+
+def test_scalar_key_prefers_the_users_own_value(monkeypatch):
+    """A user with a global core.sshCommand keeps it; only the repo's value is dropped."""
+    monkeypatch.setattr("mac_upkeep.git_sync._trusted_cache", None)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["git", "config", "--global"] and cmd[-1] == "core.sshCommand":
+            return _cp(returncode=0, stdout="ssh -i ~/.ssh/id_work\n")
+        return _cp(returncode=1)
+
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", fake_run)
+    values = [a for a in _trusted_overrides()]
+    assert "core.sshCommand=ssh -i ~/.ssh/id_work" in values
+    assert "core.sshCommand=ssh" not in values
+
+
+def test_git_protocol_is_denied(monkeypatch):
+    """core.gitProxy executes a command for git:// remotes and no -c override stops it.
+
+    Verified on git 2.55: `-c core.gitProxy=` does NOT disable it. Denying the
+    transport is the only thing that does, and git:// is an unauthenticated,
+    unencrypted legacy protocol.
+    """
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured.setdefault("cmd", list(cmd))
+        return _cp(returncode=1)
+
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", fake_run)
+    _run_git("/tmp/whatever", ["pull", "--ff-only"])
+
+    cmd = captured["cmd"]
+    overrides = {cmd[i + 1] for i, a in enumerate(cmd) if a == "-c"}
+    assert "protocol.git.allow=never" in overrides
+
+
+def test_strip_ansi_is_linear_on_unterminated_osc(monkeypatch):
+    """A hostile remote must not be able to hang the run inside the sanitiser.
+
+    The OSC branch originally used `.*?` under re.DOTALL, which rescans to
+    end-of-input for every unterminated `\x1b]`: quadratic, ~12s for 80KB of them,
+    on stderr a git server fully controls and after the subprocess timeout has passed.
+    """
+    import time
+
+    payload = "\x1b]" * 40000
+    start = time.perf_counter()
+    out = _strip_ansi(payload)
+    elapsed = time.perf_counter() - start
+
+    assert out == ""
+    assert elapsed < 1.0, f"sanitiser took {elapsed:.2f}s on 80KB of OSC introducers"

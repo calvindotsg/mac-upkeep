@@ -158,17 +158,21 @@ mac-upkeep neutralises the directives it can, on every git call — not just on 
 |---|---|
 | `core.fsmonitor` | reset to empty |
 | `.git/hooks/*` | `core.hooksPath=/dev/null` |
-| `credential.helper` | reset, then your own global/system helpers re-added |
-| `core.sshCommand` | reset, then your own global/system value re-added |
+| `credential.helper` | list reset, then your own global/system helpers re-added |
+| `core.sshCommand` | set to your own global/system value, else explicitly `ssh` |
 | `ext::` transport | `protocol.ext.allow=never` |
 | `remote.<name>.uploadpack` | `protocol.file.allow=never` |
+| `core.gitProxy` | `protocol.git.allow=never` |
 
-Two consequences worth knowing:
+Note the asymmetry in the middle two rows. `credential.helper` is multi-valued, so an empty entry resets git's accumulated list. `core.sshCommand` is single-valued, so an empty entry is not a reset — git would try to execute the empty string and every SSH remote would fail. Single-valued keys are therefore *set*, never blanked.
+
+Three consequences worth knowing:
 
 - **Local-path remotes no longer work** under git_sync (`fatal: transport 'file' not allowed`). This is deliberate — it is what closes the `uploadpack` execution path. Pull from a bare mirror on an external disk outside mac-upkeep.
+- **`git://` remotes no longer work** (`fatal: transport 'git' not allowed`). Also deliberate: `core.gitProxy` runs an arbitrary command for that transport and cannot be neutralised any other way. `git://` is unauthenticated and unencrypted; use SSH or HTTPS.
 - **Repository hooks do not run** during git_sync, so a `post-merge` hook that installs dependencies will not fire on an unattended pull.
 
-This is defence in depth, not a sandbox. Git has no "ignore this repository's config" switch, and `filter.<driver>.clean` from a planted `.gitattributes` remains reachable — driver names are arbitrary, so there is no fixed override that covers them. Enrolment discipline is the control that actually holds.
+This is defence in depth, not a sandbox. Git has no "ignore this repository's config" switch. The known remaining execution path is `filter.<driver>.clean` from a planted `.gitattributes`, which fires on `git status`: driver names are arbitrary, so no fixed override covers them. Enrolment discipline is the control that actually holds.
 
 #### Authentication
 

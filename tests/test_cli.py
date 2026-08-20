@@ -362,3 +362,31 @@ def test_run_still_notifies_when_a_task_explodes(tmp_path, monkeypatch):
     result = runner.invoke(app, ["run"])
     assert result.exit_code == 1
     notify_mock.assert_called_once()
+
+
+def test_force_task_names_are_normalised():
+    """--force accepts the same case-insensitive form the config keys use."""
+    with patch("mac_upkeep.cli.run_all_tasks") as run_mock:
+        result = runner.invoke(app, ["run", "--dry-run", "--force", "Brew_Update"])
+    assert result.exit_code == 0, result.output
+    assert run_mock.call_args[1]["force_tasks"] == {"brew_update"}
+
+
+def test_force_rejects_unknown_task_after_normalisation():
+    result = runner.invoke(app, ["run", "--dry-run", "--force", "No Such Task"])
+    assert result.exit_code == 1
+    assert "Unknown task(s): no_such_task" in result.output
+
+
+def test_aborted_run_does_not_notify_success(tmp_path, monkeypatch):
+    """A crashed run must not send a "complete" notification."""
+    notify_mock = MagicMock()
+    monkeypatch.setattr("mac_upkeep.cli.notify", notify_mock)
+    monkeypatch.setattr(
+        "mac_upkeep.cli.run_all_tasks", MagicMock(side_effect=RuntimeError("kaboom"))
+    )
+    result = runner.invoke(app, ["run"])
+    assert result.exit_code == 1
+    notify_mock.assert_called_once()
+    title = notify_mock.call_args[0][0]
+    assert "complete" not in title.lower(), title

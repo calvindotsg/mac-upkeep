@@ -728,3 +728,35 @@ def test_run_all_tasks_appends_into_caller_list():
         run_all_tasks(config=config, output=output, dry_run=True, results=sink)
 
     assert [r.name for r in sink] == ["brew_update"]
+
+
+def test_require_file_declared_is_set_at_load_time(tmp_path):
+    """The load-time wiring, not just the guard that consumes it.
+
+    The skip test hand-sets the flag, so deleting the single line in
+    config.py that populates it left the whole suite green.
+    """
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[tasks.needs_file]\ncommand = "echo hi"\nrequire_file = "${HOME}/nope.txt"\n'
+        '\n[tasks.no_file]\ncommand = "echo hi"\n'
+    )
+    config = Config.load(cfg)
+    assert config.task_defs["needs_file"].require_file_declared is True
+    assert config.task_defs["no_file"].require_file_declared is False
+    # brew_bundle declares one in defaults.toml
+    assert config.task_defs["brew_bundle"].require_file_declared is True
+
+
+def test_backstop_records_failure_for_retry_backoff(tmp_path):
+    """The backstop's retry bookkeeping only runs when not dry_run."""
+    config = Config.load(Path("/nonexistent/config.toml"))
+    config.run_order = ["brew_update"]
+    output = MagicMock()
+
+    with patch("mac_upkeep.tasks._run", side_effect=RuntimeError("boom")):
+        with patch("mac_upkeep.tasks._record_failure") as rec:
+            results = run_all_tasks(config=config, output=output, dry_run=False)
+
+    assert results[0].status == "failed"
+    rec.assert_called_once_with("brew_update")

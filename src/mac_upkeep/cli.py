@@ -166,14 +166,19 @@ def run(
         run_all_tasks(
             config=config, output=output, dry_run=dry_run, force_tasks=force_set, results=results
         )
-    except Exception:
+    except Exception as exc:
         aborted = True
         logging.getLogger("mac_upkeep").exception("mac-upkeep aborted")
+        # Record the abort as a failed result. Without this, format_summary sees no
+        # failures and the notification for a run that died reads "mac-upkeep
+        # complete" -- a success message for a crash, on the user's only headless
+        # feedback channel.
+        results.append(TaskResult("mac-upkeep", "failed", reason=f"run aborted: {exc}"))
     finally:
         output.summary(results)
 
     has_activity = any(r.status in ("ok", "failed") for r in results)
-    if config.notify and not dry_run and (has_activity or aborted):
+    if config.notify and not dry_run and has_activity:
         title, message, subtitle = format_summary(results)
         brew_prefix = get_brew_prefix()
         log_url = f"file://{brew_prefix}/var/log/mac-upkeep.log"

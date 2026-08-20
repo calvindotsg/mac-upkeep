@@ -150,15 +150,24 @@ help — it keys on ownership, and an extracted archive is owned by the invoking
 - `_STATIC_OVERRIDES` are unconditional: `core.fsmonitor=`, `core.hooksPath=/dev/null`,
   `protocol.ext.allow=never` (a repo can set `protocol.ext.allow=always` and get `ext::`
   back), `protocol.file.allow=never` (the only working block for `remote.<n>.uploadpack`,
-  which a per-name `-c` override does *not* beat).
-- `_INHERITED_OVERRIDES` (`credential.helper`, `core.sshCommand`) are reset **and then
-  re-asserted** from the user's global/system config. A bare reset would break nearly every
-  macOS user: Homebrew git ships `credential.helper = osxkeychain` at *system* scope.
-  `credential.helper` fires on an HTTP 401 despite `GIT_ASKPASS` and `GIT_TERMINAL_PROMPT`.
+  which a per-name `-c` override does *not* beat), and `protocol.git.allow=never` (the only
+  working block for `core.gitProxy` — `-c core.gitProxy=` does **not** disable it).
+- **Multi-valued and single-valued keys need opposite treatment, and confusing them is a
+  live outage.** `_INHERITED_LIST_KEYS` (`credential.helper`) is reset with an empty entry —
+  which for a list key means "discard what git accumulated" — then the user's global/system
+  values are appended back. A bare reset without the re-add would break nearly every macOS
+  user, because Homebrew git ships `credential.helper = osxkeychain` at *system* scope, and
+  the helper fires on an HTTP 401 despite `GIT_ASKPASS` and `GIT_TERMINAL_PROMPT`.
+  `_INHERITED_SCALAR_KEYS` (`core.sshCommand`) must instead be **set** to the user's value
+  or to an explicit default. An empty entry there is not a reset: git execs the empty string,
+  and every SSH remote fails with `error: cannot run :` on every run — a retry storm for the
+  default configuration, which is the one the README documents.
 - **Known residual, do not claim otherwise:** `filter.<driver>.clean` from a planted
   `.gitattributes` still executes on `status`. Driver names are arbitrary, so no fixed `-c`
   set covers them, and git has no "ignore repo-local config" switch. Enrolment discipline is
-  the real control.
+  the real control. Before adding a "this is the only remaining sink" claim anywhere, re-derive
+  the list against the installed git — `core.gitProxy` was missed on the first pass precisely
+  because the sink list was taken as complete rather than re-tested.
 - `_trusted_cache` is process-global; `tests/conftest.py` seeds it with the static half so
   argv is deterministic and the `git config` probes are not caught by tests that patch
   `git_sync.subprocess.run`. Tests exercising the inherited half reset it to `None`.
