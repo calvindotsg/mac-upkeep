@@ -2,12 +2,21 @@ name: release
 on:
   push:
     branches: [main]
+# Least privilege at the workflow level: every job that needs more than read
+# declares it for itself, so a new job added later starts from read-only rather
+# than silently inheriting write on contents and pull requests.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    # release-please and the uv.lock push both run on the App token, not
+    # `github.token`. These are kept as a belt-and-braces grant for the action's
+    # own documented requirements -- narrowing them further is a separate change
+    # that must be proven against a real release, not assumed.
+    permissions:
+      contents: write
+      pull-requests: write
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
