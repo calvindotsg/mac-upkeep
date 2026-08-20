@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.0.1](https://github.com/calvindotsg/mac-upkeep/compare/v4.0.0...v4.0.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* block per-URL proxy redirection and refuse repositories declaring it ([#66](https://github.com/calvindotsg/mac-upkeep/issues/66)) ([3dd74a9](https://github.com/calvindotsg/mac-upkeep/commit/3dd74a90e0e4278557397d5dd8809f6348a3ae32))
+* **ci:** drop the unused token scopes from bump-tap ([#61](https://github.com/calvindotsg/mac-upkeep/issues/61)) ([19a6540](https://github.com/calvindotsg/mac-upkeep/commit/19a65400d7a8a23efe17f27392f4d01a9ecbe38d))
+* close the git signature-verification sink; sanitise output at the sink ([#63](https://github.com/calvindotsg/mac-upkeep/issues/63)) ([c3d98f8](https://github.com/calvindotsg/mac-upkeep/commit/c3d98f8c7b17478284380d4d1c5c7dcbc11b80a8))
+
+
+### CI/CD
+
+* harden pr-checks against the PR checkout and narrow release permissions ([#65](https://github.com/calvindotsg/mac-upkeep/issues/65)) ([ea9a1b7](https://github.com/calvindotsg/mac-upkeep/commit/ea9a1b78d5413ce1fa4a4d64d80f40843378ea4a))
+
 ## [4.0.0](https://github.com/calvindotsg/mac-upkeep/compare/v3.0.4...v4.0.0) (2026-08-20)
 
 
