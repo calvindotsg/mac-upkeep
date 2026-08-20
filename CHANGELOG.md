@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.0.0](https://github.com/calvindotsg/mac-upkeep/compare/v3.0.4...v4.0.0) (2026-08-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* mole no longer runs as root. `mac-upkeep setup` emits no sudoers rules, `mo_clean` runs unprivileged and skips system-level cleanup, and `mo_optimize` is disabled by default because unattended it would raise a macOS password dialog. Existing installs must remove the old grant manually, since `brew upgrade` does not:
+
+### Features
+
+* run mole as the invoking user and stop emitting sudoers rules ([#58](https://github.com/calvindotsg/mac-upkeep/issues/58)) ([7cf612e](https://github.com/calvindotsg/mac-upkeep/commit/7cf612ec76c4292b37581f61ade0b6ee4ab1c680))
+
 ## [3.0.4](https://github.com/calvindotsg/mac-upkeep/compare/v3.0.3...v3.0.4) (2026-08-20)
 
 
