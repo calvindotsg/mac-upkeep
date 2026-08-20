@@ -151,23 +151,56 @@ help — it keys on ownership, and an extracted archive is owned by the invoking
   `protocol.ext.allow=never` (a repo can set `protocol.ext.allow=always` and get `ext::`
   back), `protocol.file.allow=never` (the only working block for `remote.<n>.uploadpack`,
   which a per-name `-c` override does *not* beat), and `protocol.git.allow=never` (the only
-  working block for `core.gitProxy` — `-c core.gitProxy=` does **not** disable it).
+  working block for `core.gitProxy` — `-c core.gitProxy=` does **not** disable it), plus
+  `merge.verifySignatures=false` and all four `gpg.<format>.program` keys.
+- **Signature verification is an execution sink** (run-2 F2-01, HIGH). A repo that sets
+  `merge.verifySignatures = true` makes `pull` verify the incoming commit, and git runs
+  `gpg.<format>.program` to do it. `gpg.program` is the openpgp synonym; `gpg.format`
+  selects between `gpg.openpgp.program`, `gpg.x509.program` and `gpg.ssh.program`, so all
+  four are pinned. This one belongs in the **static** half, not the inherited half: an
+  unattended `--ff-only` pull has no legitimate signature to verify, so there is no user
+  value to preserve. Two reproduction attempts gave the *wrong* answer first — an unsigned
+  upstream commit makes the payload inert (git only calls a verifier when a signature
+  exists, so forge a `gpgsig` header), and a local-path upstream is refused by
+  `protocol.file.allow=never` before verification is reached. Always preflight against
+  plain git and assert the payload fires. `tests/test_security_run2.py` bakes both
+  preflights in.
 - **Multi-valued and single-valued keys need opposite treatment, and confusing them is a
   live outage.** `_INHERITED_LIST_KEYS` (`credential.helper`) is reset with an empty entry —
   which for a list key means "discard what git accumulated" — then the user's global/system
   values are appended back. A bare reset without the re-add would break nearly every macOS
   user, because Homebrew git ships `credential.helper = osxkeychain` at *system* scope, and
   the helper fires on an HTTP 401 despite `GIT_ASKPASS` and `GIT_TERMINAL_PROMPT`.
-  `_INHERITED_SCALAR_KEYS` (`core.sshCommand`) must instead be **set** to the user's value
-  or to an explicit default. An empty entry there is not a reset: git execs the empty string,
-  and every SSH remote fails with `error: cannot run :` on every run — a retry storm for the
-  default configuration, which is the one the README documents.
-- **Known residual, do not claim otherwise:** `filter.<driver>.clean` from a planted
-  `.gitattributes` still executes on `status`. Driver names are arbitrary, so no fixed `-c`
-  set covers them, and git has no "ignore repo-local config" switch. Enrolment discipline is
-  the real control. Before adding a "this is the only remaining sink" claim anywhere, re-derive
-  the list against the installed git — `core.gitProxy` was missed on the first pass precisely
-  because the sink list was taken as complete rather than re-tested.
+  The reset also reaches `credential.<url>.helper`, because git folds the per-URL form into
+  the *same* multi-valued list and the command-line `-c` entries are applied last (verified).
+  `_INHERITED_SCALAR_KEYS` (`core.sshCommand`, `http.proxy`, `http.sslVerify`) must instead
+  be **set** to the user's value or to an explicit default — and there are two independent
+  reasons, so do not collapse them into one rule:
+  - `core.sshCommand=` is not a reset, it is the empty command. Git execs it and every SSH
+    remote fails with `error: cannot run :` on every run — a retry storm for the default
+    configuration, which is the one the README documents.
+  - `http.proxy=` *is* read by git as "disable proxying entirely", so blanking it is safe
+    from that angle — but pinning it flat would discard a legitimate **global** proxy and
+    break git_sync for every user behind one. Same silent breakage, opposite cause.
+    Check the specific key's semantics; never pattern-match from another key.
+- **Known residuals, do not claim otherwise.** Two, not one — the README said
+  `filter.<driver>.clean` was the only remaining path and that was wrong:
+  - `filter.<driver>.clean` from a planted `.gitattributes` still executes on `status`.
+    Driver names are arbitrary, so no fixed `-c` set covers them, and refusing every repo
+    that declares one would refuse every git-lfs repo.
+  - The **per-URL and per-remote transport families** — `http.<url>.proxy`,
+    `http.<url>.sslVerify`, `remote.<name>.proxy`. Verified on git 2.55: each of these
+    beats the corresponding generic `-c` override, because git resolves `http.<url>.*` by
+    urlmatch with most-specific-wins rather than folding it into the generic key (the
+    opposite of `credential.helper` above — the two families look alike and behave
+    oppositely). The URL is part of the key name, so **no fixed `-c` set can enumerate
+    them**; the only closure is a pre-flight read-and-refuse.
+
+  Git has no "ignore repo-local config" switch. Enrolment discipline is the real control.
+  Before adding a "this is the only remaining sink" claim anywhere, re-derive the list
+  against the installed git by execution — `core.gitProxy` was missed on the first pass and
+  `gpg.<format>.program` on the second, both because the list was taken as complete rather
+  than re-tested.
 - `_trusted_cache` is process-global; `tests/conftest.py` seeds it with the static half so
   argv is deterministic and the `git config` probes are not caught by tests that patch
   `git_sync.subprocess.run`. Tests exercising the inherited half reset it to `None`.
@@ -183,6 +216,17 @@ OSC-8 hyperlink with attacker-chosen target and anchor text inside our own failu
 `git_sync.py`; it covers all escape sequences plus stray C0/C1 characters, not just SGR
 colour codes. It deliberately does **not** touch `[` — markup is handled by `Text`, not by
 escaping.
+
+**Sanitise at the sink, never at the source.** `Output._clean()` is applied inside
+`task_done`, `task_debug` and `summary`, so a caller cannot forget. Sanitising in the caller
+is what failed: `git_sync` passed the remote's message through the sanitiser and then placed
+the repository's own *directory name* beside it verbatim, and a macOS filename may contain
+any byte except NUL and `/` — ESC included (run-2 F2-02). `editor_cache` feeds
+filesystem-derived names in the same way. `rich.text.Text` is **not** a substitute: it
+neutralises Rich markup but not control bytes, because `rich.control.STRIP_CONTROL_CODES`
+omits `0x1b`. The two defences are orthogonal and both are required. Note that `name` is
+sanitised alongside `reason` so the `_TaskState` lookup in `task_start`/`task_done` cannot
+drift out of sync with `header`.
 
 ### No single task may abort the run
 
@@ -255,6 +299,14 @@ reported `parsed OK` on the injected result.
 - **Config/state paths are import-time constants**, so setting `XDG_CONFIG_HOME` from a fixture is too late — patch `mac_upkeep.config.DEFAULT_CONFIG_PATH`, `mac_upkeep.cli.DEFAULT_CONFIG_PATH`, `tasks._STATE_FILE` and `tasks._RETRY_FILE` objects directly. `Config.load(path=None)` resolves `DEFAULT_CONFIG_PATH` **at call time**; as a default argument it would bind at def time and silently ignore every patch.
 - **`git_sync` SSH auth under launchd** relies on `~/.ssh/config` `IdentityAgent` (path-based, e.g. 1Password socket). `SSH_AUTH_SOCK` env vars are NOT inherited by LaunchAgents, so env-based agent forwarding won't work here — the `IdentityAgent` directive is the supported path.
 - **`git_sync` forces `GIT_TERMINAL_PROMPT=0` and defaults `GIT_ASKPASS=/usr/bin/true`** (user-set `GIT_ASKPASS` is respected) — fail-fast on auth misconfiguration instead of stalling to the 60 s subprocess timeout. A genuine stall (network/server hang) still hits the timeout, so `_run_git` catches `subprocess.TimeoutExpired` and returns a synthetic `CompletedProcess(returncode=124, stderr="timed out after {timeout}s")`. That marks only the affected repo failed and lets the loop continue — a hung pull cannot abort the whole run (which would otherwise skip `output.summary()`/`notify()` and later tasks).
+- **`git_sync` decodes leniently and isolates per repository.** `_run_git` and
+  `_read_user_config` pass `errors="replace"`: `text=True` alone decodes strictly, and one
+  invalid UTF-8 byte in a ref, commit message or server error raised `UnicodeDecodeError`
+  straight past the `TimeoutExpired` catch and out of the handler, so every repo sorted after
+  the offending one silently stopped syncing while the task burned retry backoff (run-2
+  F2-03). The per-repository `try/except Exception` in `run_git_sync`'s loop is the second
+  half of that fix — it mirrors the isolation the timeout path already provided, and it is a
+  deliberate catch-all, not sloppiness.
 - **`git_sync` failure reasons belong in the aggregate `TaskResult`, not only `output.task_debug()`** — debug output is suppressed without `--debug` on the non-interactive path (`Output.debug` is set but not consulted by the interactive branch, so a TTY always sees it), so the log recorded `13 failed: <names>` with no cause, which is not diagnosable after the fact. `_format_failures()` groups repos by reason because the common case is one shared cause (a network drop failing every repo at once); it caps names per group and truncates long messages so a 16-repo outage cannot blow up the log line or the notification body.
 
 ## Release Process
