@@ -104,7 +104,7 @@ def test_load_task_defs_defaults_only():
     assert task_defs["brew_update"].detect == "brew"
     assert task_defs["brew_update"].frequency == "weekly"
     assert task_defs["gcloud"].frequency == "monthly"
-    assert task_defs["mo_clean"].sudo is True
+    assert task_defs["mo_clean"].sudo is False  # 4.0.0: mole runs as the invoking user
     assert task_defs["mo_clean"].command == "/opt/homebrew/bin/mo clean"
     assert task_defs["fisher"].shell == "fish --interactive -c"
     assert run_order[0] == "brew_update"
@@ -601,3 +601,37 @@ def test_env_override_uses_truthy_allowlist(monkeypatch):
         monkeypatch.setenv("MAC_UPKEEP_UV", value)
         config = Config.load(Path("/nonexistent/config.toml"))
         assert config.is_enabled("uv") is True, value
+
+
+# --- F-01/F-02: mole must not be invoked as root ---
+
+
+def test_mole_tasks_do_not_use_sudo():
+    """Neither shipped mole task may carry `sudo`.
+
+    Running the whole tool as root is outside mole's stated threat model, and the
+    vulnerable chown path in its base.sh exists ONLY in root mode. This is the
+    change that removes the need for a NOPASSWD grant at all.
+    """
+    config = Config.load(Path("/nonexistent/config.toml"))
+    for name in ("mo_clean", "mo_optimize"):
+        td = config.task_defs[name]
+        assert td.sudo is False, name
+        assert "sudo" not in td.description.lower(), name
+
+    # No shipped task may reintroduce it.
+    assert [n for n, td in config.task_defs.items() if td.sudo] == []
+
+
+def test_mo_optimize_is_disabled_by_default():
+    """Disabled, not merely de-sudoed.
+
+    bin/optimize.sh calls ensure_sudo_session unconditionally outside dry-run with
+    no non-interactive guard, so under launchd it raises an osascript password
+    dialog that sits until the task times out -- and unprivileged it achieves
+    almost nothing, since its work is root-only.
+    """
+    config = Config.load(Path("/nonexistent/config.toml"))
+    assert config.is_enabled("mo_optimize") is False
+    # mo_clean stays on: non-interactively it uses `sudo -n -v`, which never prompts.
+    assert config.is_enabled("mo_clean") is True

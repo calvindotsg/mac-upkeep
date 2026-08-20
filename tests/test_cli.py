@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -31,27 +32,60 @@ def test_version_flag():
     assert result.exit_code == 0
 
 
-def test_setup_outputs_sudoers():
-    result = runner.invoke(app, ["setup"])
-    assert result.exit_code == 0
-    assert "NOPASSWD" in result.output
-    assert "env_keep" in result.output
-    assert "mo clean" in result.output
-    assert "mo optimize" in result.output
+def test_setup_emits_no_sudoers_rules():
+    """setup must never again hand the user a NOPASSWD grant to install.
 
-
-def test_setup_env_keep_preserves_user_and_logname():
-    """Regression: sudo resets USER/LOGNAME to root while env_keep kept HOME.
-
-    mole compares $HOME's owner against $USER to decide whether the home
-    directory needs a permissions repair. With HOME preserved but USER=root,
-    that reads "owned by calvin, but I am root", so mole attempted
-    `diskutil resetUserPermissions / 0` -- passing root's uid -- which failed
-    and made `mo optimize` exit 1 on every single run.
+    The rule named `$BREW_PREFIX/bin/mo`, a bash script inside a user-writable
+    Homebrew prefix that transitively sources ~30 more user-owned .sh files, so
+    any code already running as the user could rewrite what root would execute.
+    A sha256 Digest_Spec does not fix that -- it covers the one entry script, and
+    sudoers(5) documents digests as TOCTOU-racy for a user-writable directory.
     """
     result = runner.invoke(app, ["setup"])
     assert result.exit_code == 0
-    assert 'env_keep += "HOME USER LOGNAME"' in result.output
+    for forbidden in ("NOPASSWD", "env_keep", "ALL = (root)"):
+        assert forbidden not in result.output, forbidden
+    # Stronger than a word blocklist: every emitted line must be a comment or
+    # blank, so nothing in the output is an installable policy directive at all.
+    for line in result.output.splitlines():
+        assert not line.strip() or line.lstrip().startswith("#"), line
+    # It still prints the thing it is actually for.
+    assert "newsyslog" in result.output
+
+
+def test_setup_username_comes_from_pwd_not_the_environment(monkeypatch):
+    """A poisoned LOGNAME must not reach the config lines setup prints.
+
+    getpass.getuser() consults LOGNAME/USER/LNAME/USERNAME before pwd, so anything
+    able to set an env var chose what got interpolated -- and the output is piped
+    straight into a root-owned config file.
+    """
+    monkeypatch.setenv("LOGNAME", "evil\n/etc/passwd  root:wheel  666  1  *  $D0  GN")
+    monkeypatch.setenv("USER", "evil")
+    result = runner.invoke(app, ["setup"])
+    assert result.exit_code == 0
+    assert "evil" not in result.output
+    assert "/etc/passwd" not in result.output
+
+
+def test_setup_refuses_an_implausible_username(monkeypatch):
+    """Defence in depth: even a pathological pwd entry cannot inject a second rule.
+
+    The env vector is closed by reading pwd, so this is the only way to reach the
+    validation -- without it the check is untestable and would be deleted as dead.
+    """
+    import pwd as pwd_module
+
+    real = pwd_module.getpwuid(os.getuid())
+
+    class Hostile:
+        pw_name = "ok\n/etc/passwd  root:wheel  666  1  *  $D0  GN"
+
+    monkeypatch.setattr("mac_upkeep.cli.pwd.getpwuid", lambda _uid: Hostile())
+    result = runner.invoke(app, ["setup"])
+    assert result.exit_code == 1
+    assert "/etc/passwd" not in result.stdout
+    assert real.pw_name is not None  # sanity: real pwd lookup still works
 
 
 def test_run_dry_run():

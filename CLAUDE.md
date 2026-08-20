@@ -193,20 +193,46 @@ Under launchd the notification is the user's only feedback channel, and `summary
 exits the Rich `Live` context. The dead `CalledProcessError` branch was removed — `check=True`
 is never passed, so it read as coverage that did not exist.
 
-### sudo + HOME/USER/LOGNAME
+### mole runs as the invoking user (4.0.0)
 
-`sudo -n` with full path `$BREW_PREFIX/bin/mo`. Sudoers `env_keep += "HOME USER LOGNAME"`. The `sudo` field in `TaskDef` exists instead of embedding `sudo` in the command so that: (a) dry-run can skip sudo, (b) `detect` infers the correct binary, (c) `mac-upkeep setup` can generate sudoers rules.
+`mo_clean` and `mo_optimize` carry **no** `sudo`, and `setup` emits no sudoers rules. Do not
+"restore" them. mac-upkeep was the component that introduced the NOPASSWD grant — mole itself
+ships none, and neither do topgrade or homebrew-autoupdate.
 
-**All three variables must be kept together — keeping only `HOME` is worse than keeping none.** `HOME` is preserved so mole sees the user's home rather than `/var/root` (otherwise it misses user caches). But sudo also resets `USER`/`LOGNAME` to `root`, and mole's `needs_permissions_repair()` compares `stat -f %Su "$HOME"` against `$USER`. With `HOME` preserved and `USER` reset, that comparison reads *"owned by calvin, but I am root"* → mole concludes the home directory needs repairing and runs `sudo diskutil resetUserPermissions / $(id -u)` — where `id -u` under sudo is **0**, i.e. it tries to reset the user's home to root's uid. The call fails, which is the only reason this was merely noisy rather than destructive; the failure then made `mo optimize` exit 1 on every run (see [Retry backoff](#retry-backoff) for the downstream storm).
+- The rule named `$BREW_PREFIX/bin/mo`, a bash script in a **user-writable** prefix sourcing
+  ~30 user-owned `.sh` files, so user-level code execution became silent root. A `sha256`
+  `Digest_Spec` is not a fix: it hashes the entry script only, and `sudoers(5)` calls digests
+  TOCTOU-racy for a user-writable directory.
+- Running mole as root is also outside mole's own stated threat model
+  (`docs/SECURITY_DESIGN.md`), and its vulnerable `chown` path (`lib/core/base.sh:711`) exists
+  *only* in root mode.
+- **Do not "fix" this by dropping `HOME` from `env_keep` instead.** Verified: mole's
+  `get_invoking_home()` covers neither `LOG_FILE` nor its ~260 raw `$HOME` cleanup targets, so
+  root-run mole would silently operate on `/var/root` and stop cleaning the user's caches
+  while appearing to work.
 
-Verify with mole's dry run, which makes no changes:
+**The two tasks are not the same shape, and that asymmetry is deliberate:**
 
-```bash
-MOLE_DRY_RUN=1 mo optimize | grep -A2 'Permission Repair'              # "already optimal"
-env USER=root MOLE_DRY_RUN=1 mo optimize | grep -A2 'Permission Repair' # enters repair branch
-```
+- `mo_clean` stays **enabled**. Non-interactively (`stdin` closed) `bin/clean.sh` takes its
+  `else` branch at `:1494` and calls `adopt_sudo_session`, which is `sudo -n -v` — the `-n`
+  means it never prompts. No ticket simply yields `SYSTEM_CLEAN=false` and the run continues
+  on user caches. Measured cost of the lost privileged half: ~7 MB/week in `/private/var/log`.
+- `mo_optimize` ships **`enabled = false`**, not merely de-sudoed. `bin/optimize.sh:293` calls
+  `ensure_sudo_session` unconditionally whenever `MOLE_DRY_RUN != 1`, with no non-interactive
+  guard, so under launchd `request_sudo_access` takes its `is_gui_mode` branch and raises an
+  osascript password dialog that sits until the task times out. Unprivileged it would also
+  achieve nearly nothing, since its work is all root-only.
 
-**The sudoers file is not upgraded automatically** — it is installed manually via `mac-upkeep setup | sudo tee /etc/sudoers.d/mac-upkeep`, so existing users keep the old `env_keep` until they reinstall it. `setup` prints an upgrade note for this reason.
+`TaskDef.sudo` and `_build_cmd`'s sudo branch are retained deliberately — a user may still set
+`sudo = true` on their own custom task. It simply is not used by anything shipped.
+
+### setup() reads the username from pwd, not the environment
+
+`_current_username()` uses `pwd.getpwuid(os.getuid())` and validates against
+`^[A-Za-z0-9._-]+$`. `getpass.getuser()` consults `LOGNAME`/`USER`/`LNAME`/`USERNAME` *before*
+pwd, so anything able to set an env var chose what got interpolated into output the user pipes
+into a root-owned config file — and `visudo -c`, the check the README used to prescribe,
+reported `parsed OK` on the injected result.
 
 ### Brew prefix detection
 

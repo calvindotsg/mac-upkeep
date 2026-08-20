@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import getpass
 import importlib.resources
 import json
 import logging
 import os
+import pwd
+import re
 import shutil
 import signal
 import subprocess
@@ -33,8 +34,10 @@ from mac_upkeep.tasks import TASKS, _load_state, format_last_run, format_next_ru
 
 app = typer.Typer(
     help="Automated macOS mac-upkeep CLI.\n\n"
-    "Runs 11 tasks: brew update/upgrade, gcloud, pnpm, uv, fisher, "
-    "mo clean/optimize/purge, brew cleanup, brew bundle cleanup.\n\n"
+    "Runs 13 tasks: brew update/upgrade, gcloud, pnpm, uv, fisher, "
+    "mo clean/optimize/purge, brew cleanup, brew bundle cleanup, git sync, "
+    "editor cache.\n\n"
+    "Every task runs as you -- no sudo, no sudoers file.\n\n"
     "Install: brew install calvindotsg/tap/mac-upkeep\n\n"
     "Schedule: brew services start mac-upkeep (on boot + Monday 12 PM)\n\n"
     "Config: ~/.config/mac-upkeep/config.toml",
@@ -128,9 +131,11 @@ def run(
     Disable specific tasks via config file or MAC_UPKEEP_<TASK>=false environment variables.
 
     Task order: brew_update, brew_upgrade, gcloud, pnpm, uv, fisher,
-    mo_clean, mo_optimize, mo_purge, brew_cleanup, brew_bundle, git_sync.
-    brew_cleanup runs after mo_clean (which runs brew autoremove).
+    mo_clean, mo_optimize, mo_purge, brew_cleanup, brew_bundle, git_sync,
+    editor_cache. brew_cleanup runs after mo_clean (which runs brew autoremove).
     brew_bundle runs last (homebrew/brew#21350).
+
+    pnpm, mo_optimize and editor_cache ship disabled; enable them in config.
 
     Exit codes: 0 = completed (some tasks may be skipped), 130 = interrupted.
     """
@@ -415,38 +420,36 @@ def notify_test() -> None:
         raise typer.Exit(1)
 
 
+def _current_username() -> str:
+    """The invoking user's name, from the password database rather than the env.
+
+    `getpass.getuser()` consults LOGNAME/USER/LNAME/USERNAME *before* falling back
+    to pwd, so anything able to set an environment variable chose what got
+    interpolated into the config lines this command prints. The name is validated
+    too, so a pathological pwd entry cannot inject a second newsyslog rule.
+    """
+    name = pwd.getpwuid(os.getuid()).pw_name
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        typer.echo(f"Refusing to emit config for implausible username: {name!r}", err=True)
+        raise typer.Exit(1)
+    return name
+
+
 @app.command()
 def setup() -> None:
-    """Print sudoers rules for this machine.
+    """Print the log-rotation config for this machine.
 
-    Generates machine-specific rules using your username and Homebrew prefix.
-    Pipe to sudoers::
-
-        mac-upkeep setup | sudo tee /etc/sudoers.d/mac-upkeep
-        sudo chmod 0440 /etc/sudoers.d/mac-upkeep
-
-    The env_keep line preserves HOME so mole operates on your home directory,
-    not /var/root (which is the default when running via sudo). USER and LOGNAME
-    are preserved alongside it: sudo resets them to root, and mole compares
-    $HOME's owner against $USER to decide whether the home directory needs a
-    permissions repair. Preserving HOME alone makes that comparison read
-    "owned by calvin, but I am root", so mole tries to repair permissions that
-    are already correct.
+    No sudoers rules are emitted, and none are needed: mac-upkeep runs every task
+    as the invoking user. Earlier versions printed a NOPASSWD rule for `mo`, which
+    named a bash script inside a user-writable Homebrew prefix -- so any code
+    already running as you could rewrite what root would execute. See the release
+    notes for 4.0.0.
     """
-    user = getpass.getuser()
+    user = _current_username()
     brew_prefix = get_brew_prefix()
-    mo_bin = f"{brew_prefix}/bin/mo"
 
-    typer.echo(f"# Sudoers rules for mac-upkeep CLI ({user}@{brew_prefix})")
-    typer.echo(
-        "# Install: mac-upkeep setup | sudo tee /etc/sudoers.d/mac-upkeep"
-        " && sudo chmod 0440 /etc/sudoers.d/mac-upkeep"
-    )
-    typer.echo("# Upgrading from < 3.0.0? Reinstall this file -- env_keep gained USER/LOGNAME.")
-    typer.echo()
-    typer.echo(f'Defaults!{mo_bin} env_keep += "HOME USER LOGNAME"')
-    typer.echo(f"{user} ALL = (root) NOPASSWD: {mo_bin} clean")
-    typer.echo(f"{user} ALL = (root) NOPASSWD: {mo_bin} optimize")
+    typer.echo(f"# mac-upkeep log rotation ({user}@{brew_prefix})")
+    typer.echo("# No sudoers rules are required -- every task runs as you.")
     typer.echo()
     typer.echo("# Log rotation (install separately):")
     log_path = f"{brew_prefix}/var/log/mac-upkeep.log"
