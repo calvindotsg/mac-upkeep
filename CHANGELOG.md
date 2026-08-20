@@ -1,5 +1,25 @@
 # Changelog
 
+## [4.0.2](https://github.com/calvindotsg/mac-upkeep/compare/v4.0.1...v4.0.2) (2026-08-20)
+
+
+### Documentation
+
+* correct the release-PR triage advice -- snooze breaks the release lane ([#73](https://github.com/calvindotsg/mac-upkeep/issues/73)) ([31a1fa8](https://github.com/calvindotsg/mac-upkeep/commit/31a1fa8d356c0bdc96466f109e6a9db17c2f6d72))
+* record how a release PR is triaged and where the formula's pins come from ([#71](https://github.com/calvindotsg/mac-upkeep/issues/71)) ([70e20ac](https://github.com/calvindotsg/mac-upkeep/commit/70e20ac7815a9ced917a0a6d43ccfa10e905c64f))
+
+
+### Miscellaneous
+
+* **deps:** bump the python group with 2 updates ([#69](https://github.com/calvindotsg/mac-upkeep/issues/69)) ([f565a1b](https://github.com/calvindotsg/mac-upkeep/commit/f565a1bd61a10d0a68ceebee6a5b9a6c4d03cb85))
+* raise the pytest floor past CVE-2025-71176 and enable uv version updates ([#67](https://github.com/calvindotsg/mac-upkeep/issues/67)) ([41abc64](https://github.com/calvindotsg/mac-upkeep/commit/41abc642c733fcdedd51decc002afbb4163a63a9))
+
+
+### CI/CD
+
+* bump the actions group across 1 directory with 2 updates ([#56](https://github.com/calvindotsg/mac-upkeep/issues/56)) ([15080a5](https://github.com/calvindotsg/mac-upkeep/commit/15080a585874f6e453430fbed98035cea0faa8a6))
+* parse the squash message, not just the PR commits ([#70](https://github.com/calvindotsg/mac-upkeep/issues/70)) ([0c6677c](https://github.com/calvindotsg/mac-upkeep/commit/0c6677ce9bb814a49a10307e0c56d68cfa409bef))
+
 ## [4.0.1](https://github.com/calvindotsg/mac-upkeep/compare/v4.0.0...v4.0.1) (2026-08-20)
 
 
