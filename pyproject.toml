@@ -33,7 +33,15 @@ Changelog = "https://github.com/calvindotsg/mac-upkeep/blob/main/CHANGELOG.md"
 mac-upkeep = "mac_upkeep.cli:app"
 
 [dependency-groups]
-dev = ["ruff>=0.8", "pytest>=8"]
+# pytest is floored at the CVE-2025-71176 fix (GHSA-6w46-j5rx-g56g), not left at
+# the ">=8" the project started with. Through 9.0.2, getbasetemp() stat'd
+# `<tmpdir>/pytest-of-<user>` following symlinks, so a symlink planted at that
+# predictable path was followed; 9.0.3 lstat's it and refuses a symlink outright.
+# uv.lock pins a fixed release, but a lock is a record of one resolution, not a
+# constraint on the next: `uv lock --upgrade`, a lock regenerated from scratch,
+# or anyone installing this group without the lock can pick a vulnerable version
+# straight back up. The floor is what makes the fix survive a re-resolve.
+dev = ["ruff>=0.8", "pytest>=9.0.3"]
 
 [build-system]
 requires = ["hatchling"]
