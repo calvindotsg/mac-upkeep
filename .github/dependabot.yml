@@ -18,3 +18,33 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+
+  # Python dependencies. Security updates for `uv.lock` already arrive without
+  # this block -- they are driven by Dependabot alerts, not by config, which is
+  # how the pytest CVE-2025-71176 PR appeared. What was missing is the ROUTINE
+  # half, and that is the half that would have mattered: pytest 9.0.3 shipped
+  # the fix on 2026-04-07, while the advisory that raised the alert was not
+  # published until 2026-08-20. A weekly version update closes that four-month
+  # window without anyone needing to hear about the CVE at all. Staying current
+  # is the control; the alert is only the backstop.
+  #
+  # Cost is a release PR to triage, same as the actions group above: `chore` is
+  # a changelog-section here, so a lone `chore(deps)` commit does cut a release
+  # PR - v2.2.1 was produced by a chore-only commit, exactly as v3.0.2 was by a
+  # `ci:` one. Close it: `uv.lock` is a DEVELOPMENT lockfile. It pins what CI
+  # and contributors resolve, it is not shipped in the wheel, and end users
+  # resolve `typer>=0.12` themselves - so no uv bump here is ever user-facing.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      # Set explicitly rather than left to Dependabot's inference from recent
+      # history: pr-checks.yml rejects any commit @conventional-commits/parser
+      # cannot read, so the prefix is a CI contract, not a style preference.
+      prefix: chore
+      prefix-development: chore
+      include: scope
+    groups:
+      python:
+        patterns: ["*"]
