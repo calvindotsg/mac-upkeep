@@ -1,9 +1,28 @@
 # Reject a `Release-As:` trailer at the point it would enter the repository.
 #
-# squash_merge_commit_message is COMMIT_MESSAGES, so a squashed PR's body is the
-# contributor's own commit messages. release-please parses a `Release-As:` footer
-# and short-circuits all version derivation, so a merged benign-looking PR can
-# dictate the published version -- and PyPI never permits version reuse.
+# Which text becomes the squashed commit is a REPOSITORY SETTING, not a property
+# of this workflow, and it has already changed once underneath this file. Read it
+# with `gh api repos/OWNER/REPO --jq .squash_merge_commit_message`; do not trust
+# this comment, which asserted COMMIT_MESSAGES and was overtaken.
+#
+# Observed on this repository's own history, which is the only evidence that
+# survives the change (a settings edit leaves no audit trail on a personal repo):
+# 7cf612e (PR #58, two commits) carries its COMMIT messages, while de4b006
+# (PR #62) and 41abc64 (PR #67) carry their PR BODIES -- and PR #62's two source
+# commits have no body at all, so the text can only have come from the PR.
+# `gh pr merge --squash` does not insulate anything either: it omits commitBody
+# from the mutation unless `--body` is passed (cli/cli
+# pkg/cmd/pr/merge/http.go:72), so GitHub applies the repository default.
+#
+# Therefore neither guard below may key off the setting. Both read EVERY
+# candidate source -- the PR's commits, the PR title and the PR body -- and fail
+# closed on any of them. Checking only the source that happens to be live today
+# is how the parse guard came to validate text that never landed while skipping
+# the text that did. A false positive costs a reword; the miss costs a release.
+#
+# release-please parses a `Release-As:` footer and short-circuits all version
+# derivation, so a merged benign-looking PR can dictate the published version --
+# and PyPI never permits version reuse.
 #
 # An anchored semver check in release.yml is NOT sufficient on its own: the
 # payload `Release-As: 99.0.0` yields the perfectly well-formed tag v99.0.0.
@@ -29,6 +48,9 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
+          # Interpolated into env, never into `run:` -- a PR title is attacker text.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
         # release-please logs the parse error and then exits 0, so an unparseable
         # message means "no release PR" with a green workflow and no other signal.
         # A body line beginning `identifier(` is read as a `type(scope):` header;
@@ -74,12 +96,27 @@ jobs:
             echo "ok: $sha"
           done
 
+          # The commits above are only HALF the candidates, and under the current
+          # repository setting they are the half that does NOT land: the squashed
+          # commit release-please actually parses is `PR title` + blank + `PR body`.
+          # 41abc64 is the worked example -- its two commit messages passed this
+          # very loop and were then discarded at merge in favour of the PR body,
+          # which nothing had parsed. Check both sources unconditionally rather
+          # than reading the setting, so a settings flip cannot silently reopen
+          # the hole in either direction.
+          printf '%s\n\n%s\n' "$PR_TITLE" "$PR_BODY" > "$RUNNER_TEMP/squash-msg.txt"
+          node "$CCP/check-commit-msg.js" "$RUNNER_TEMP/squash-msg.txt"
+          echo "ok: squash message (PR title + PR body)"
+
       - name: Reject Release-As trailers
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
-          # squash_merge_commit_title is COMMIT_OR_PR_TITLE, so for a multi-commit PR
-          # the squashed subject comes from the PR title -- which is not in git log.
+          # The squashed subject can come from the PR title -- currently always, as
+          # squash_merge_commit_title reads PR_TITLE, and previously for any
+          # multi-commit PR under COMMIT_OR_PR_TITLE. Either way it is not in
+          # git log, so it is scanned explicitly. This step was already correct
+          # under both settings because it reads every source; see the header.
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
