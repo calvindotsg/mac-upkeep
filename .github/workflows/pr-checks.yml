@@ -108,52 +108,46 @@ jobs:
           node "$CCP/check-commit-msg.js" "$RUNNER_TEMP/squash-msg.txt"
           echo "ok: squash message (PR title + PR body)"
 
-          # ...and again WRAPPED, because that is the text that actually lands.
+          # Refuse the SHAPE, on BODY lines only.
           #
-          # GitHub hard-wraps the PR body when it writes the squash commit. Measured
-          # against c5cf9bc (PR #77): the PR body's longest line was 587 characters
-          # and every line of the landed commit is at most 72. So the gate above can
-          # pass on a line the repository never sees.
+          # Reject any body line that BEGINS `identifier(` -- with or without the
+          # backtick that makes it look safe. That is what release-please chokes on,
+          # and it is what actually happened: GitHub hard-wraps the PR body when it
+          # writes the squash commit, so a line that parses on its own can land split.
           #
-          # That is not hypothetical -- it is how #77 got in. Its body carried
+          # Measured on c5cf9bc (PR #77): the PR body's longest line was 587 chars and
+          # every landed line is at most 72. Its body carried a backticked call at
+          # column 0; the wrap fell inside the parens, the landed line never closed its
+          # scope, release-please logged `unexpected token` and exited 0, and 4.0.2's
+          # changelog silently lost the fix it was cut for. The step above parsed the
+          # UNWRAPPED body and passed.
           #
-          #     `_run_guarded(cmd, *, timeout, grace=_TERM_GRACE_SECONDS, **popen_kwargs)` ...
+          # `tail -n +2` is load-bearing: line 1 is the conventional-commit header, and
+          # `chore(main): release 4.0.2` is supposed to look exactly like this pattern.
+          # Without the skip this rejects every release-please PR and no release can
+          # ever merge. Found by running it against a real one.
           #
-          # which parses fine on one line: the scope opened by `(` closes later on
-          # the same line. The wrap split it after `grace=_TERM_GRACE_SECONDS,`, so
-          # the landed line BEGINS `identifier(` and never closes. release-please
-          # logged `unexpected token` and exited 0, the release workflow went green,
-          # and 4.0.2's changelog silently lost the fix it was cut for.
+          # Anchored at column 0, also load-bearing: CLAUDE.md's measured table records
+          # that an INDENTED `  a(b(c)) here` parses, so allowing leading whitespace
+          # would reject the documented remedy and leave an author nowhere to go.
           #
-          # `fold -s` is an approximation of GitHub's wrapping, not a reproduction,
-          # so it is defence in depth for the exact check below -- never a substitute.
-          fold -s -w 72 "$RUNNER_TEMP/squash-msg.txt" > "$RUNNER_TEMP/squash-wrapped.txt"
-          node "$CCP/check-commit-msg.js" "$RUNNER_TEMP/squash-wrapped.txt"
-          echo "ok: squash message, wrapped at 72 as GitHub writes it"
-
-          # The load-bearing check: refuse the SHAPE at column 0.
-          #
-          # Reject any line that BEGINS `identifier(` -- with or without the backtick
-          # that makes it look safe -- because that is what release-please chokes on,
-          # and whether a given line ends up in that shape after wrapping is GitHub's
-          # business, not something to predict.
-          #
-          # Anchored at column 0 on purpose, and the anchor is load-bearing in the
-          # other direction too: CLAUDE.md's measured table records that an INDENTED
-          # `  a(b(c)) here` parses. Allowing leading whitespace here would reject the
-          # documented remedy and leave an author with nowhere to go -- caught by a
-          # positive control, which is the only reason it is not still wrong.
-          #
-          # Deliberately stricter than the parser. Per this file's header, a false
-          # positive costs a reword and the miss costs a release -- and the miss has
-          # now happened once.
-          if grep -nE '^`?[A-Za-z_][A-Za-z0-9_.-]*\(' "$RUNNER_TEMP/squash-msg.txt"; then
-            echo "::error::A line above begins with name( -- after GitHub wraps the body at 72"
-            echo "::error::columns that becomes an unterminated type(scope): header, release-please"
-            echo "::error::drops the whole commit and exits 0. Indent it, bullet it, or reword."
+          # NO WRAPPED-REPARSE STEP HERE, DELIBERATELY. `fold -s -w 72` looks like the
+          # obvious belt-and-braces and is an unsound imitation: with no space to break
+          # at it splits mid-token, so it guillotines the long compare URL that every
+          # release-please body carries and reports a failure that cannot occur.
+          # Verified GitHub does not do that -- `[Claude Code](https://claude.com/...)`
+          # landed intact in c5cf9bc. GitHub's algorithm is not `fold`, it is not
+          # documented, and per CLAUDE.md an approximation of someone else's rule is a
+          # silent wrong answer. Refuse a measured shape instead of predicting a wrap.
+          if tail -n +2 "$RUNNER_TEMP/squash-msg.txt" \
+               | grep -nE '^`?[A-Za-z_][A-Za-z0-9_.-]*\('; then
+            echo "::error::A body line above begins with name( -- once GitHub wraps the"
+            echo "::error::body at 72 columns that can land as an unterminated"
+            echo "::error::type(scope): header, and release-please then drops the whole"
+            echo "::error::commit and exits 0. Indent the line, bullet it, or reword."
             exit 1
           fi
-          echo "ok: no squash-message line begins with name("
+          echo "ok: no squash-message body line begins with name("
 
       - name: Reject Release-As trailers
         env:
