@@ -55,7 +55,7 @@ def _set_retry(task_key: str, failures: int, ago: timedelta) -> None:
 def _run_failing_gcloud(config: Config, *, returncode: int = 1, dry_run: bool = False):
     with (
         patch("mac_upkeep.tasks.shutil.which", return_value="/usr/bin/gcloud"),
-        patch("mac_upkeep.tasks.subprocess.run") as mock_run,
+        patch("mac_upkeep.tasks._run_guarded") as mock_run,
     ):
         mock_run.return_value = MagicMock(returncode=returncode, stdout="", stderr="boom")
         return _run(
