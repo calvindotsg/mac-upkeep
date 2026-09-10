@@ -3,6 +3,11 @@
 ## [4.0.2](https://github.com/calvindotsg/mac-upkeep/compare/v4.0.1...v4.0.2) (2026-09-10)
 
 
+### Bug Fixes
+
+* ask a timed-out task to stop before killing it ([#77](https://github.com/calvindotsg/mac-upkeep/issues/77)) ([c5cf9bc](https://github.com/calvindotsg/mac-upkeep/commit/c5cf9bc57cb6974e66a3760e4845568e887e5893))
+
+
 ### Documentation
 
 * correct the release-PR triage advice -- snooze breaks the release lane ([#73](https://github.com/calvindotsg/mac-upkeep/issues/73)) ([31a1fa8](https://github.com/calvindotsg/mac-upkeep/commit/31a1fa8d356c0bdc96466f109e6a9db17c2f6d72))
