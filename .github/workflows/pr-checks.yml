@@ -108,6 +108,53 @@ jobs:
           node "$CCP/check-commit-msg.js" "$RUNNER_TEMP/squash-msg.txt"
           echo "ok: squash message (PR title + PR body)"
 
+          # ...and again WRAPPED, because that is the text that actually lands.
+          #
+          # GitHub hard-wraps the PR body when it writes the squash commit. Measured
+          # against c5cf9bc (PR #77): the PR body's longest line was 587 characters
+          # and every line of the landed commit is at most 72. So the gate above can
+          # pass on a line the repository never sees.
+          #
+          # That is not hypothetical -- it is how #77 got in. Its body carried
+          #
+          #     `_run_guarded(cmd, *, timeout, grace=_TERM_GRACE_SECONDS, **popen_kwargs)` ...
+          #
+          # which parses fine on one line: the scope opened by `(` closes later on
+          # the same line. The wrap split it after `grace=_TERM_GRACE_SECONDS,`, so
+          # the landed line BEGINS `identifier(` and never closes. release-please
+          # logged `unexpected token` and exited 0, the release workflow went green,
+          # and 4.0.2's changelog silently lost the fix it was cut for.
+          #
+          # `fold -s` is an approximation of GitHub's wrapping, not a reproduction,
+          # so it is defence in depth for the exact check below -- never a substitute.
+          fold -s -w 72 "$RUNNER_TEMP/squash-msg.txt" > "$RUNNER_TEMP/squash-wrapped.txt"
+          node "$CCP/check-commit-msg.js" "$RUNNER_TEMP/squash-wrapped.txt"
+          echo "ok: squash message, wrapped at 72 as GitHub writes it"
+
+          # The load-bearing check: refuse the SHAPE at column 0.
+          #
+          # Reject any line that BEGINS `identifier(` -- with or without the backtick
+          # that makes it look safe -- because that is what release-please chokes on,
+          # and whether a given line ends up in that shape after wrapping is GitHub's
+          # business, not something to predict.
+          #
+          # Anchored at column 0 on purpose, and the anchor is load-bearing in the
+          # other direction too: CLAUDE.md's measured table records that an INDENTED
+          # `  a(b(c)) here` parses. Allowing leading whitespace here would reject the
+          # documented remedy and leave an author with nowhere to go -- caught by a
+          # positive control, which is the only reason it is not still wrong.
+          #
+          # Deliberately stricter than the parser. Per this file's header, a false
+          # positive costs a reword and the miss costs a release -- and the miss has
+          # now happened once.
+          if grep -nE '^`?[A-Za-z_][A-Za-z0-9_.-]*\(' "$RUNNER_TEMP/squash-msg.txt"; then
+            echo "::error::A line above begins with name( -- after GitHub wraps the body at 72"
+            echo "::error::columns that becomes an unterminated type(scope): header, release-please"
+            echo "::error::drops the whole commit and exits 0. Indent it, bullet it, or reword."
+            exit 1
+          fi
+          echo "ok: no squash-message line begins with name("
+
       - name: Reject Release-As trailers
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
