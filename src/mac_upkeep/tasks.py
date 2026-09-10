@@ -47,6 +47,64 @@ FREQUENCY_THRESHOLDS: dict[str, timedelta] = {
 # already provides for the scheduled run, so interactive and scheduled runs agree.
 _TASK_CWD = "/"
 
+# On a timeout the child gets SIGTERM, then this long to wind down, and only then
+# SIGKILL. `subprocess.run(timeout=)` goes straight to SIGKILL (CPython calls
+# `Popen.kill()` in its `except TimeoutExpired` path), which cannot be caught -- so
+# every `finally`, signal handler and cleanup path in the child is skipped.
+#
+# THAT IS NOT A THEORETICAL COST. Homebrew guards its critical sections with
+# `ignore_interrupts`, which handles SIGINT and SIGTERM and is powerless against
+# SIGKILL. Its `Keg#unlink` deletes the prefix symlinks FIRST and its own linked-keg
+# record LAST, so a SIGKILL landing between the two leaves the binary gone and the
+# record still claiming the keg is linked. `brew link` then refuses forever with
+# "Already linked" -- it tests the record, never the filesystem -- and `brew list`,
+# `brew info`, `brew outdated` and `brew bundle` all read that same record, so
+# nothing reports the damage. Measured on one machine: `calvindotsg/tap/opensrc`
+# silently unreachable three times in three months, twice within a day of a run
+# logged here as `timed out` or `Interrupted (signal 15)`.
+#
+# 10 s is for winding down a critical section, not for finishing the job -- a keg
+# link/unlink is milliseconds. A child that ignores SIGTERM still dies, 10 s later.
+_TERM_GRACE_SECONDS = 10
+
+# Deliberately NOT `start_new_session=True` + `os.killpg`. Signalling the whole
+# process group would also reach grandchildren, but it detaches the child from the
+# controlling terminal -- and cli.py's SIGINT handler only logs and exits 130, it
+# does not forward. So a Ctrl-C would leave `brew` running with nothing to stop it:
+# the same class of orphaned-mid-transaction bug this function exists to prevent.
+# The current behaviour already signals only the direct child, so keeping that is
+# not a regression, and Homebrew handles SIGTERM by design.
+
+
+def _run_guarded(
+    cmd: list[str],
+    *,
+    timeout: float,
+    grace: float = _TERM_GRACE_SECONDS,
+    **popen_kwargs: object,
+) -> subprocess.CompletedProcess[str]:
+    """`subprocess.run`, except a timeout escalates SIGTERM -> grace -> SIGKILL.
+
+    Raises `subprocess.TimeoutExpired` on expiry exactly as `subprocess.run` does,
+    carrying whatever the child had written by then, so callers need no new branch.
+    """
+    with subprocess.Popen(cmd, **popen_kwargs) as proc:  # type: ignore[call-overload]
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            try:
+                # Draining the pipes here is not optional: a child killed while its
+                # stdout buffer is full blocks in write() and never reaches its own
+                # cleanup, which would defeat the whole point of the SIGTERM.
+                stdout, stderr = proc.communicate(timeout=grace)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                stdout, stderr = proc.communicate()
+            raise subprocess.TimeoutExpired(cmd, timeout, output=stdout, stderr=stderr) from None
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
 # Failed tasks back off 1h, 2h, 4h, ... capped at their own frequency threshold.
 # Without this a permanently-failing task re-runs on every invocation (RunAtLoad,
 # manual runs, launchd), because only successes record a timestamp.
@@ -325,9 +383,10 @@ def run_task(
     # Only the subprocess call is guarded: an OSError raised while *emitting* output
     # is a different fault and must not be reported as an execution failure.
     try:
-        result = subprocess.run(
+        result = _run_guarded(
             cmd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             timeout=timeout,
             stdin=subprocess.DEVNULL,

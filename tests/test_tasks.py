@@ -114,7 +114,7 @@ def test_run_task_dry_run_does_not_execute():
     assert result.reason == "dry-run"
 
 
-@patch("mac_upkeep.tasks.subprocess.run")
+@patch("mac_upkeep.tasks._run_guarded")
 @patch("mac_upkeep.tasks.shutil.which", return_value="/usr/bin/echo")
 def test_run_task_executes_command(mock_which, mock_run):
     mock_run.return_value = MagicMock(returncode=0, stdout="done", stderr="")
@@ -129,7 +129,7 @@ def test_run_task_executes_command(mock_which, mock_run):
     assert task_call[1]["stdin"] == subprocess.DEVNULL
 
 
-@patch("mac_upkeep.tasks.subprocess.run")
+@patch("mac_upkeep.tasks._run_guarded")
 @patch("mac_upkeep.tasks.shutil.which", return_value="/usr/bin/echo")
 def test_run_task_nonzero_exit_returns_failed(mock_which, mock_run):
     mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="error")
@@ -140,7 +140,7 @@ def test_run_task_nonzero_exit_returns_failed(mock_which, mock_run):
     assert result.duration > 0
 
 
-@patch("mac_upkeep.tasks.subprocess.run")
+@patch("mac_upkeep.tasks._run_guarded")
 @patch("mac_upkeep.tasks.shutil.which", return_value="/usr/bin/echo")
 def test_run_task_timeout_returns_failed(mock_which, mock_run):
     mock_run.side_effect = subprocess.TimeoutExpired(cmd="echo", timeout=300)
@@ -150,7 +150,7 @@ def test_run_task_timeout_returns_failed(mock_which, mock_run):
     assert result.reason == "timed out"
 
 
-@patch("mac_upkeep.tasks.subprocess.run")
+@patch("mac_upkeep.tasks._run_guarded")
 @patch("mac_upkeep.tasks.shutil.which", return_value="/usr/bin/echo")
 def test_run_task_uses_custom_timeout(mock_which, mock_run):
     mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
@@ -258,7 +258,7 @@ def test_run_frequency_skip(tmp_path, monkeypatch):
     assert result.reason.startswith("ran recently, next")
 
 
-@patch("mac_upkeep.tasks.subprocess.run")
+@patch("mac_upkeep.tasks._run_guarded")
 @patch("mac_upkeep.tasks.shutil.which", return_value="/usr/bin/gcloud")
 def test_force_bypasses_frequency(mock_which, mock_run, tmp_path, monkeypatch):
     """_run() executes forced task (filter passes, frequency bypassed)."""
@@ -353,7 +353,7 @@ def test_run_all_tasks_require_file_filter_before_file_check():
     assert results[0].reason == "not selected"
 
 
-@patch("mac_upkeep.tasks.subprocess.run")
+@patch("mac_upkeep.tasks._run_guarded")
 @patch("mac_upkeep.tasks.shutil.which", return_value="/usr/bin/echo")
 def test_failed_task_no_timestamp_update(mock_which, mock_run, tmp_path, monkeypatch):
     """Failed task does not update the last-run timestamp."""
@@ -661,7 +661,7 @@ def test_declared_require_file_that_resolves_empty_is_skipped():
     config.run_order = ["brew_bundle"]
     output = MagicMock()
 
-    with patch("mac_upkeep.tasks.subprocess.run") as mock_run:
+    with patch("mac_upkeep.tasks._run_guarded") as mock_run:
         results = run_all_tasks(config=config, output=output, dry_run=False)
 
     mock_run.assert_not_called()
@@ -673,7 +673,7 @@ def test_task_subprocess_gets_explicit_cwd():
     """Tasks must not inherit the caller's working directory."""
     config = Config.load(Path("/nonexistent/config.toml"))
     with patch("mac_upkeep.tasks.shutil.which", return_value="/usr/bin/true"):
-        with patch("mac_upkeep.tasks.subprocess.run") as mock_run:
+        with patch("mac_upkeep.tasks._run_guarded") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, "", "")
             run_task("brew_update", ["brew", "update"], config=config)
     assert mock_run.call_args[1]["cwd"] == "/"
@@ -687,7 +687,7 @@ def test_run_task_survives_oserror():
     config = Config.load(Path("/nonexistent/config.toml"))
     with patch("mac_upkeep.tasks.shutil.which", return_value="/usr/bin/true"):
         with patch(
-            "mac_upkeep.tasks.subprocess.run",
+            "mac_upkeep.tasks._run_guarded",
             side_effect=OSError(8, "Exec format error"),
         ):
             result = run_task("brew_update", ["brew", "update"], config=config)

@@ -61,6 +61,22 @@ def isolate_user_environment(tmp_path_factory, monkeypatch):
     monkeypatch.setattr("mac_upkeep.tasks._STATE_FILE", state_dir / "last-run.json")
     monkeypatch.setattr("mac_upkeep.tasks._RETRY_FILE", state_dir / "retry-state.json")
 
+    # `Config.load()` -> `_build_variables` -> `get_brew_prefix()` SHELLS OUT to the
+    # developer's real `brew --prefix`, so every config load in the suite was a
+    # subprocess with a machine-dependent answer. It stayed invisible only because
+    # the task tests patched `mac_upkeep.tasks.subprocess.run` -- and `tasks` and
+    # `config` import the SAME module object, so that patch silently covered this
+    # call too. The moment a patch is narrowed to the function actually under test,
+    # six unrelated tests start exec'ing whatever `shutil.which` was mocked to
+    # return. Pin it here instead: the value matches the constant every test in
+    # test_config.py already hardcodes as BREW_PREFIX.
+    # Both names, because cli.py does `from mac_upkeep.config import get_brew_prefix`
+    # -- that binding is a separate module attribute and patching only the source
+    # module leaves `mac_upkeep.cli.get_brew_prefix` pointing at the real function.
+    _brew_prefix = "/opt/homebrew" if os.uname().machine == "arm64" else "/usr/local"
+    monkeypatch.setattr("mac_upkeep.config.get_brew_prefix", lambda: _brew_prefix)
+    monkeypatch.setattr("mac_upkeep.cli.get_brew_prefix", lambda: _brew_prefix)
+
     # git_sync derives part of its `-c` hardening from the developer's real global
     # and system git config, which would make argv machine-dependent and would also
     # be intercepted by tests that patch git_sync.subprocess.run. Seed the cache with

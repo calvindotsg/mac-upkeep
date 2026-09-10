@@ -350,7 +350,7 @@ def test_run_sends_notification_on_activity(tmp_path, monkeypatch):
     with (
         patch("mac_upkeep.cli.notify") as mock_notify,
         patch("mac_upkeep.tasks.shutil.which", return_value="/usr/bin/echo"),
-        patch("mac_upkeep.tasks.subprocess.run") as mock_run,
+        patch("mac_upkeep.tasks._run_guarded") as mock_run,
     ):
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         result = runner.invoke(app, ["run", "--force", "brew_update"])
