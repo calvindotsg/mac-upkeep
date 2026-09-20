@@ -95,6 +95,13 @@ enabled = false
 [tasks.brew_update]
 frequency = "monthly"
 
+# Pin a weekly task to a day of the week. Plain "weekly" means "6 days since the
+# last success", which drifts: a run that slips to Sunday is next due on Saturday.
+# With a weekday it means "not yet this week": due at the first run on or after
+# that day's midnight, and never twice between two of them.
+[tasks.brew_bundle]
+weekday = "monday"
+
 # Set Brewfile path explicitly
 [paths]
 brewfile = "~/.config/Brewfile"

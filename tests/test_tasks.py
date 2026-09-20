@@ -760,3 +760,97 @@ def test_backstop_records_failure_for_retry_backoff(tmp_path):
 
     assert results[0].status == "failed"
     rec.assert_called_once_with("brew_update")
+
+
+# --- Weekday-anchored weekly tasks ---
+
+
+def _anchored_config(weekday: str = "monday") -> Config:
+    config = Config.load()
+    config.task_defs["brew_update"].weekday = weekday
+    return config
+
+
+def _state(tmp_path, monkeypatch, last_run: datetime) -> None:
+    state_file = tmp_path / "last-run.json"
+    state_file.write_text(json.dumps({"brew_update": last_run.isoformat(timespec="seconds")}))
+    monkeypatch.setattr("mac_upkeep.tasks._STATE_FILE", state_file)
+
+
+def _last(weekday: int, days_ago_floor: int = 0) -> datetime:
+    """A timestamp on the most recent `weekday` (0=Monday) at least `days_ago_floor` days back."""
+    now = datetime.now()
+    back = (now.weekday() - weekday) % 7
+    if back < days_ago_floor:
+        back += 7
+    return (now - timedelta(days=back)).replace(hour=13, minute=25, second=0, microsecond=0)
+
+
+def test_anchored_due_when_last_run_was_before_this_weeks_anchor(tmp_path, monkeypatch):
+    # Ran on a Sunday; today is that Sunday or later -- the Monday boundary has
+    # been crossed iff today is not that Sunday.
+    from mac_upkeep.tasks import _frequency_due
+
+    config = _anchored_config("monday")
+    last = _last(6)  # most recent Sunday (possibly today)
+    due = _frequency_due("brew_update", config, last)
+    assert due.weekday() == 0
+    assert due.hour == due.minute == 0
+    assert last < due <= last + timedelta(days=1)
+
+
+def test_anchored_not_due_again_until_next_anchor(tmp_path, monkeypatch):
+    # A Monday run is not due again for a full week, even though the unanchored
+    # 6-day threshold would make it due on Sunday -- the drift this field exists to stop.
+    from mac_upkeep.tasks import _frequency_due
+
+    config = _anchored_config("monday")
+    last = _last(0)
+    due = _frequency_due("brew_update", config, last)
+    assert due == (last + timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+    unanchored = Config.load()
+    assert _frequency_due("brew_update", unanchored, last) == last + timedelta(days=6)
+
+
+def test_anchored_should_run_sunday_run_is_due_on_monday(tmp_path, monkeypatch):
+    # Last success 8 days ago on a Sunday-shaped timestamp relative to a Monday anchor:
+    # older than one anchor boundary, so due regardless of today's weekday.
+    config = _anchored_config("monday")
+    _state(tmp_path, monkeypatch, datetime.now() - timedelta(days=8))
+    assert _should_run("brew_update", config) is True
+
+
+def test_anchored_should_run_not_due_inside_the_week(tmp_path, monkeypatch):
+    # Last success earlier today: the next anchor midnight is strictly in the
+    # future whatever today is, so a boot-time re-run is skipped.
+    from mac_upkeep.config import WEEKDAYS
+
+    config = _anchored_config(WEEKDAYS[datetime.now().weekday()])
+    _state(tmp_path, monkeypatch, datetime.now() - timedelta(hours=1))
+    assert _should_run("brew_update", config) is False
+
+
+def test_anchored_format_next_run_names_the_boundary(tmp_path, monkeypatch):
+    config = _anchored_config("monday")
+    last = _last(0)  # most recent Monday 13:25
+    _state(tmp_path, monkeypatch, last)
+    text = format_next_run("brew_update", config)
+    remaining = (last + timedelta(days=7)).replace(hour=0, minute=0, second=0) - datetime.now()
+    if remaining <= timedelta(0):
+        assert text == "now"
+    elif remaining < timedelta(days=1):
+        assert text.startswith("in ")
+    else:
+        assert text == f"in {-(-remaining // timedelta(days=1))} days"
+
+
+def test_anchor_ignored_when_frequency_is_not_weekly():
+    # Belt and braces: validation refuses this in a config file, but an env-var
+    # frequency override lands after validation, so the scheduler must not anchor
+    # a daily or monthly task.
+    from mac_upkeep.tasks import _frequency_due
+
+    config = _anchored_config("monday")
+    config.task_defs["brew_update"].frequency = "daily"
+    last = datetime(2026, 9, 20, 13, 25)
+    assert _frequency_due("brew_update", config, last) == last + timedelta(hours=20)

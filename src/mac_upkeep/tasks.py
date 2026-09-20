@@ -224,6 +224,24 @@ def _skip_reason(task_key: str, config: Config) -> str | None:
     return f"ran recently, next {format_next_run(task_key, config)}"
 
 
+def _frequency_due(task_key: str, config: Config, last_run: datetime) -> datetime:
+    """When this task's frequency next makes it eligible, given its last success.
+
+    Unanchored: last success plus the frequency threshold. Anchored (a weekly task
+    with `weekday` set): midnight of the first such weekday strictly after the last
+    success -- "not yet this week", so a run that slipped to Sunday is due again on
+    Monday, not the following Saturday, and a Monday run is not due again until the
+    next Monday however many boot-time invocations land in between.
+    """
+    anchor = config.get_weekday(task_key)
+    if anchor is not None and config.get_frequency(task_key) == "weekly":
+        day = last_run.replace(hour=0, minute=0, second=0, microsecond=0)
+        ahead = (anchor - day.weekday()) % 7 or 7
+        return day + timedelta(days=ahead)
+    threshold = FREQUENCY_THRESHOLDS.get(config.get_frequency(task_key), timedelta(days=6))
+    return last_run + threshold
+
+
 def _should_run(task_key: str, config: Config) -> bool:
     """Check if enough time has elapsed since last run for this task's frequency."""
     if _backoff_until(task_key, config) is not None:
@@ -236,8 +254,7 @@ def _should_run(task_key: str, config: Config) -> bool:
         last_run = datetime.fromisoformat(last_run_str)
     except ValueError:
         return True
-    threshold = FREQUENCY_THRESHOLDS.get(config.get_frequency(task_key), timedelta(days=6))
-    return (datetime.now() - last_run) >= threshold
+    return datetime.now() >= _frequency_due(task_key, config, last_run)
 
 
 def _update_last_run(task_key: str) -> None:
@@ -314,8 +331,7 @@ def format_next_run(
         except ValueError:
             frequency_due = None
         else:
-            threshold = FREQUENCY_THRESHOLDS.get(config.get_frequency(task_key), timedelta(days=6))
-            frequency_due = last_run + threshold
+            frequency_due = _frequency_due(task_key, config, last_run)
 
     due = max((d for d in (backoff_due, frequency_due) if d is not None), default=None)
     if due is None:
