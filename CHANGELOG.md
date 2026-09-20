@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.0](https://github.com/calvindotsg/mac-upkeep/compare/v4.0.2...v4.1.0) (2026-09-20)
+
+
+### Features
+
+* anchor a weekly task to a day of the week ([#82](https://github.com/calvindotsg/mac-upkeep/issues/82)) ([cbdc092](https://github.com/calvindotsg/mac-upkeep/commit/cbdc092d960336571ba2357b127f51a22df325c3))
+
 ## [4.0.2](https://github.com/calvindotsg/mac-upkeep/compare/v4.0.1...v4.0.2) (2026-09-10)
 
 
