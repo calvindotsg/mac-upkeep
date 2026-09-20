@@ -17,6 +17,10 @@ DEFAULT_CONFIG_DIR = Path(_xdg) / "mac-upkeep"
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.toml"
 
 
+# Python's weekday() order, so index == datetime.weekday().
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+
 @dataclass
 class TaskDef:
     """A task definition loaded from TOML."""
@@ -26,6 +30,12 @@ class TaskDef:
     command: str
     detect: str = ""
     frequency: str = "weekly"
+    # A weekly task anchored to a day of the week ("monday" .. "sunday"). Unanchored
+    # (the default) means "6 days since the last success", which drifts: a run that
+    # slips to Sunday makes the next one due on Saturday. Anchored means "not yet
+    # this calendar week" -- due at the first invocation on or after that weekday's
+    # midnight, and never twice between two of them.
+    weekday: str = ""
     enabled: bool = True
     sudo: bool = False
     shell: str = ""
@@ -46,6 +56,7 @@ _FIELD_TYPES: dict[str, type] = {
     "command": str,
     "detect": str,
     "frequency": str,
+    "weekday": str,
     "enabled": bool,
     "sudo": bool,
     "shell": str,
@@ -214,6 +225,18 @@ def load_task_defs(
                 f"Task '{name}': frequency must be 'daily', 'weekly', or 'monthly', "
                 f"got '{td.frequency}'"
             )
+        if td.weekday:
+            td.weekday = td.weekday.strip().lower()
+            if td.weekday not in WEEKDAYS:
+                raise ValueError(
+                    f"Task '{name}': weekday must be one of {', '.join(WEEKDAYS)}, "
+                    f"got '{td.weekday}'"
+                )
+            if td.frequency != "weekly":
+                raise ValueError(
+                    f"Task '{name}': weekday only applies to frequency = 'weekly', "
+                    f"got '{td.frequency}'"
+                )
     for entry in run_order:
         if entry not in task_defs:
             raise ValueError(f"run.order references unknown task '{entry}'")
@@ -271,6 +294,7 @@ def _parse_task_def(name: str, data: dict, *, raw_name: str | None = None) -> Ta
         command=field("command", ""),
         detect=field("detect", ""),
         frequency=field("frequency", "weekly"),
+        weekday=field("weekday", ""),
         enabled=field("enabled", True),
         sudo=field("sudo", False),
         shell=field("shell", ""),
@@ -368,6 +392,13 @@ class Config:
         """Get the frequency for a task ('weekly' or 'monthly')."""
         td = self.task_defs.get(task)
         return td.frequency if td else "weekly"
+
+    def get_weekday(self, task: str) -> int | None:
+        """The anchor weekday for a weekly task as Python's 0=Monday .. 6=Sunday, or None."""
+        td = self.task_defs.get(task)
+        if td is None or not td.weekday:
+            return None
+        return WEEKDAYS.index(td.weekday)
 
 
 def _discover_brewfile() -> str | None:

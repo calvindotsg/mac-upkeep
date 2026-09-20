@@ -635,3 +635,33 @@ def test_mo_optimize_is_disabled_by_default():
     assert config.is_enabled("mo_optimize") is False
     # mo_clean stays on: non-interactively it uses `sudo -n -v`, which never prompts.
     assert config.is_enabled("mo_clean") is True
+
+
+# --- weekday anchor ---
+
+_VARS = {"BREW_PREFIX": "/opt/homebrew", "BREWFILE": "", "HOME": "/users/me"}
+
+
+def test_weekday_anchor_loads_and_normalises():
+    user_data = {"tasks": {"brew_update": {"weekday": " Monday "}}}
+    task_defs, _ = load_task_defs(user_data, _VARS)
+    assert task_defs["brew_update"].weekday == "monday"
+    config = Config.load()
+    config.task_defs["brew_update"].weekday = "sunday"
+    assert config.get_weekday("brew_update") == 6
+    assert config.get_weekday("gcloud") is None
+
+
+def test_weekday_anchor_refuses_an_unknown_day():
+    with pytest.raises(ValueError, match="weekday must be one of"):
+        load_task_defs({"tasks": {"brew_update": {"weekday": "someday"}}}, _VARS)
+
+
+def test_weekday_anchor_refuses_a_non_weekly_task():
+    with pytest.raises(ValueError, match="only applies to frequency = 'weekly'"):
+        load_task_defs({"tasks": {"gcloud": {"weekday": "monday"}}}, _VARS)
+
+
+def test_weekday_anchor_must_be_a_string():
+    with pytest.raises(ValueError, match="'weekday' must be str"):
+        load_task_defs({"tasks": {"brew_update": {"weekday": 1}}}, _VARS)

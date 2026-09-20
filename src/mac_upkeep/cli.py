@@ -22,6 +22,7 @@ from mac_upkeep.config import (
     DEFAULT_CONFIG_DIR,
     DEFAULT_CONFIG_PATH,
     Config,
+    TaskDef,
     _build_variables,
     _load_defaults,
     get_brew_prefix,
@@ -201,6 +202,11 @@ def run(
         raise typer.Exit(1)
 
 
+def _frequency_label(td: TaskDef) -> str:
+    """'weekly' as configured, or 'weekly (mon)' for a weekday-anchored task."""
+    return f"{td.frequency} ({td.weekday[:3]})" if td.weekday else td.frequency
+
+
 @app.command()
 def tasks() -> None:
     """List all tasks with frequency, status, and last run time."""
@@ -232,7 +238,7 @@ def tasks() -> None:
                 status = "[green]ready[/green]"
             last_run = format_last_run(state.get(name))
             next_run = "[dim]—[/dim]" if not td.enabled else format_next_run(name, config, state)
-            table.add_row(name, td.description, td.frequency, status, last_run, next_run)
+            table.add_row(name, td.description, _frequency_label(td), status, last_run, next_run)
 
         Console(highlight=False).print(table)
     else:
@@ -246,7 +252,7 @@ def tasks() -> None:
             last_run = format_last_run(state.get(name))
             next_run = "—" if not td.enabled else format_next_run(name, config, state)
             typer.echo(
-                f"{name}\t{td.description}\t{td.frequency}\t{status}\t{last_run}\t{next_run}"
+                f"{name}\t{td.description}\t{_frequency_label(td)}\t{status}\t{last_run}\t{next_run}"
             )
 
 
