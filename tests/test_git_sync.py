@@ -757,3 +757,22 @@ def test_dry_run_says_fetch_for_fetch_only(tmp_path):
     lines = [c[0][0] for c in output.task_debug.call_args_list]
     assert f"would pull: {p}" in lines
     assert f"would fetch: {wiki}" in lines
+
+
+def test_fetch_only_matches_by_identity_not_spelling(tmp_path, monkeypatch):
+    """A symlinked or differently-cased spelling of a fetch_only repo must not be pulled."""
+    real = _make_repo(tmp_path, "wiki")
+    link = tmp_path / "alias"
+    link.symlink_to(real)
+    run = _git_by_argv()
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run)
+    config = _config([str(link)])
+    config.git_sync_fetch_only = [real]
+    result = run_git_sync(config, MagicMock(), dry_run=False)
+    assert result.reason == "1 fetched"
+    assert not any(args.startswith("pull") for _, args in run.calls)
+
+
+def test_glob_with_trailing_slash_dedupes_against_literal(tmp_path):
+    p = _make_repo(tmp_path, "biz")
+    assert _resolve_paths([str(tmp_path / "*") + "/", p], MagicMock()) == [p]

@@ -261,28 +261,43 @@ def _unsafe_repo_config(path: str) -> str:
     return ""
 
 
-def _resolve_paths(patterns: list[str], output: Output) -> list[str]:
-    """Expand user paths and globs; emit debug lines for empty matches."""
+def _repo_key(path: str) -> object:
+    """Identity of a directory, for dedup and for matching `fetch_only` against `repos`.
+
+    Spelling is not identity: `~/x` vs `~/x/`, `~/Code` vs `~/code` on case-insensitive
+    APFS, and a symlinked parent all name one checkout. Comparing strings let a
+    `fetch_only` repo also listed under `repos` with another spelling be pulled -- the
+    exact checkout the list exists to protect -- so this fails CLOSED on (dev, inode).
+    A path that cannot be stat'ed falls back to its normalised string; `_sync_repo`
+    then skips it as "not a git repo" anyway.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return os.path.normpath(path)
+    return (st.st_dev, st.st_ino)
+
+
+def _resolve_paths(patterns: list[str], output: Output | None) -> list[str]:
+    """Expand user paths and globs, dropping duplicates; debug-log empty glob matches."""
     paths: list[str] = []
-    seen: set[str] = set()
+    seen: set[object] = set()
     for pattern in patterns:
         expanded = os.path.expanduser(pattern)
         if any(ch in expanded for ch in "*?["):
             matches = sorted(glob.glob(expanded))
             if not matches:
-                output.task_debug(f"no match: {pattern}")
+                if output is not None:
+                    output.task_debug(f"no match: {pattern}")
                 continue
-            for m in matches:
-                if m not in seen:
-                    seen.add(m)
-                    paths.append(m)
         else:
-            # `~/x` and `~/x/` are one repo: two entries would sync it twice, and a
-            # path in both `repos` and `fetch_only` would be pulled as well as fetched.
-            expanded = os.path.normpath(expanded)
-            if expanded not in seen:
-                seen.add(expanded)
-                paths.append(expanded)
+            matches = [expanded]
+        for m in matches:
+            m = os.path.normpath(m)  # `x/` from a `*/` glob or a literal is still `x`
+            key = _repo_key(m)
+            if key not in seen:
+                seen.add(key)
+                paths.append(m)
     return paths
 
 
@@ -407,14 +422,14 @@ def run_git_sync(config: Config, output: Output, dry_run: bool) -> TaskResult:
     if not paths:
         return TaskResult("git_sync", "skipped", reason="no repos matched")
 
-    # A path in both lists is fetch-only: the reading that touches less wins.
-    fetch_only = {
-        os.path.normpath(p) for p in _resolve_paths(list(config.git_sync_fetch_only), output)
-    }
+    # A path in both lists is fetch-only: the reading that touches less wins. Matched by
+    # directory identity, never spelling (see _repo_key). No output: the call above
+    # already logged any empty glob.
+    fetch_only = {_repo_key(p) for p in _resolve_paths(list(config.git_sync_fetch_only), None)}
 
     if dry_run:
         for path in paths:
-            verb = "fetch" if os.path.normpath(path) in fetch_only else "pull"
+            verb = "fetch" if _repo_key(path) in fetch_only else "pull"
             output.task_debug(f"would {verb}: {path}")
         return TaskResult("git_sync", "ok", reason=f"dry-run: {len(paths)} repos")
 
@@ -428,7 +443,7 @@ def run_git_sync(config: Config, output: Output, dry_run: bool) -> TaskResult:
                 path,
                 skip_dirty=config.git_sync_skip_dirty,
                 branches=config.git_sync_branches,
-                fetch_only=os.path.normpath(path) in fetch_only,
+                fetch_only=_repo_key(path) in fetch_only,
             )
         except Exception as exc:  # noqa: BLE001 - one repo must never end the task
             # Mirrors the isolation _run_git's TimeoutExpired catch already provides.

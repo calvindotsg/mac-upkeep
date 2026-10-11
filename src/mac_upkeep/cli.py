@@ -146,6 +146,8 @@ def run(
     pnpm, mo_optimize and editor_cache ship disabled; enable them in config.
 
     Exit codes: 0 = completed (some tasks may be skipped), 130 = interrupted.
+    Only one run at a time: a run that finds another in progress does nothing,
+    prints "another run is in progress" to stderr, and exits 0 -- even with --force.
     """
     _setup_logging(debug)
     config = Config.load()
