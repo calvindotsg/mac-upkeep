@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.2.0](https://github.com/calvindotsg/mac-upkeep/compare/v4.1.0...v4.2.0) (2026-10-11)
+
+
+### Features
+
+* fetch repos git_sync will not pull, and allow one run at a time ([#84](https://github.com/calvindotsg/mac-upkeep/issues/84)) ([0d4c11b](https://github.com/calvindotsg/mac-upkeep/commit/0d4c11b891246775fd384de2b8d9bf6e7a5b0651))
+
 ## [4.1.0](https://github.com/calvindotsg/mac-upkeep/compare/v4.0.2...v4.1.0) (2026-09-20)
 
 
