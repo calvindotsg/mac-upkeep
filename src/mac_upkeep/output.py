@@ -203,6 +203,11 @@ class Output:
                     logger.info("DRY-RUN: would run %s (%s)", name, detail)
                 else:
                     logger.info("DRY-RUN: would run %s", name)
+            elif result.status == "ok" and reason:
+                # Handlers summarise their work ("9 pulled, 2 skipped: astro (dirty
+                # worktree)"). Under launchd this log line is the only record of it, so
+                # dropping the reason left nothing to tell a stale checkout from a pull.
+                logger.info("Running %s... done (%s)", name, reason)
             elif result.status == "ok":
                 logger.info("Running %s... done", name)
             elif result.status == "failed":

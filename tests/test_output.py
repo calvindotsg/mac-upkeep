@@ -109,8 +109,19 @@ def test_output_non_interactive_ok_reason_is_not_treated_as_dry_run(caplog):
     result = TaskResult("editor_cache", "ok", reason="nothing to clean")
     with caplog.at_level(logging.INFO, logger="mac_upkeep"):
         output.task_done(result)
-    assert "Running editor_cache... done" in caplog.text
+    assert "Running editor_cache... done (nothing to clean)" in caplog.text
     assert "DRY-RUN" not in caplog.text
+
+
+def test_output_non_interactive_ok_logs_handler_summary(caplog):
+    """Under launchd the log is the only record of which repos git_sync skipped."""
+    import logging
+
+    output = _non_interactive()
+    reason = "9 pulled, 1 fetched, 2 skipped: astro, docs (dirty worktree)"
+    with caplog.at_level(logging.INFO, logger="mac_upkeep"):
+        output.task_done(TaskResult("git_sync", "ok", reason=reason))
+    assert f"Running git_sync... done ({reason})" in caplog.text
 
 
 def test_output_non_interactive_task_done_skipped(caplog):
