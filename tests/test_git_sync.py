@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 from mac_upkeep.config import Config
 from mac_upkeep.git_sync import (
-    _format_failures,
+    _format_grouped,
     _resolve_paths,
     _run_git,
     _strip_ansi,
@@ -146,7 +146,7 @@ def test_skip_not_a_repo(tmp_path, monkeypatch):
     monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", lambda *a, **k: _cp(returncode=128))
     result = run_git_sync(config, output, dry_run=False)
     assert result.status == "ok"
-    assert result.reason == "1 skipped"
+    assert result.reason == "1 skipped: not-repo (not a git repo)"
 
 
 def test_skip_no_remote(tmp_path, monkeypatch):
@@ -162,7 +162,7 @@ def test_skip_no_remote(tmp_path, monkeypatch):
     monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run)
     result = run_git_sync(config, output, dry_run=False)
     assert result.status == "ok"
-    assert result.reason == "1 skipped"
+    assert result.reason == "1 skipped: biz (no remote configured)"
     assert any("no remote configured" in c[0][0] for c in output.task_debug.call_args_list)
 
 
@@ -197,11 +197,13 @@ def test_skip_dirty_worktree(tmp_path, monkeypatch):
             _cp(returncode=0, stdout="main\n"),
             _cp(returncode=0, stdout="origin/main\n"),
             _cp(returncode=0, stdout=" M file.txt\n"),
+            _cp(returncode=0),  # fetch: refs move on even though the checkout can't
         ]
     )
     monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run)
     result = run_git_sync(config, output, dry_run=False)
     assert result.status == "ok"
+    assert result.reason == "1 skipped: biz (dirty worktree)"
     assert any("dirty worktree" in c[0][0] for c in output.task_debug.call_args_list)
 
 
@@ -244,7 +246,7 @@ def test_aggregate_mixed(tmp_path, monkeypatch):
     monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", fake_run)
     result = run_git_sync(config, output, dry_run=False)
     assert result.status == "ok"
-    assert result.reason == "3 pulled, 2 skipped"
+    assert result.reason == "3 pulled, 2 skipped: r0, r1 (not a git repo)"
 
 
 # --- env hardening ---
@@ -355,27 +357,27 @@ def test_pull_timeout_does_not_crash_run(tmp_path, monkeypatch):
 # --- failure reporting (regression: causes were only visible under --debug) ---
 
 
-def test_format_failures_groups_shared_cause():
+def test_format_grouped_groups_shared_cause():
     """A network drop fails every repo with the same message; report it once."""
     failures = [(f"repo{i}", "could not read from remote repository") for i in range(13)]
-    assert _format_failures(failures) == (
+    assert _format_grouped(failures) == (
         "repo0, repo1, repo2, +10 more (could not read from remote repository)"
     )
 
 
-def test_format_failures_keeps_distinct_causes_separate():
-    out = _format_failures([("biz", "timed out after 60s"), ("ops", "Permission denied")])
+def test_format_grouped_keeps_distinct_causes_separate():
+    out = _format_grouped([("biz", "timed out after 60s"), ("ops", "Permission denied")])
     assert out == "biz (timed out after 60s); ops (Permission denied)"
 
 
-def test_format_failures_truncates_long_reason():
-    out = _format_failures([("biz", "x" * 200)])
+def test_format_grouped_truncates_long_reason():
+    out = _format_grouped([("biz", "x" * 200)])
     assert out.endswith("…)")
     assert len(out) < 120
 
 
-def test_format_failures_handles_empty_reason():
-    assert _format_failures([("biz", "")]) == "biz (unknown error)"
+def test_format_grouped_handles_empty_reason():
+    assert _format_grouped([("biz", "")]) == "biz (unknown error)"
 
 
 def test_multiple_repos_share_one_reason_in_result(tmp_path, monkeypatch):
@@ -573,3 +575,185 @@ def test_strip_ansi_is_linear_on_unterminated_osc(monkeypatch):
 
     assert out == ""
     assert elapsed < 1.0, f"sanitiser took {elapsed:.2f}s on 80KB of OSC introducers"
+
+
+# --- fetch before skip, branch allowlist, fetch_only (4.2.0) ---
+
+
+def _git_by_argv(overrides: dict[str, subprocess.CompletedProcess] | None = None):
+    """A `subprocess.run` stand-in that answers by git subcommand, never by call order.
+
+    Defaults describe a clean repo on `main` with an upstream; `overrides` keys are the
+    git args after `-C <path>`, joined by spaces, matched as a prefix (longest wins).
+    Dispatching on argv means an added or removed git call cannot shift a response onto
+    the wrong command -- the silent failure `_sequenced` documents above. `calls`
+    records each repo's git args so tests can assert what did, and did not, run.
+    """
+    answers = {
+        "rev-parse --is-inside-work-tree": _cp(stdout="true\n"),
+        "config --list": _cp(stdout=""),
+        "remote": _cp(stdout="origin\n"),
+        "rev-parse --abbrev-ref HEAD": _cp(stdout="main\n"),
+        "rev-parse --abbrev-ref --symbolic-full-name": _cp(stdout="origin/main\n"),
+        "status --porcelain": _cp(stdout=""),
+        "fetch": _cp(),
+        "pull --ff-only": _cp(stdout="Already up to date.\n"),
+        **(overrides or {}),
+    }
+    calls: list[tuple[str, str]] = []
+
+    def run(cmd, **kwargs):
+        path, rest = _split_git_args(cmd)
+        joined = " ".join(rest)
+        calls.append((os.path.basename(path), joined))
+        key = max((k for k in answers if joined.startswith(k)), key=len, default=None)
+        if key is None:
+            raise AssertionError(f"unexpected git call: {joined}")
+        return answers[key]
+
+    run.calls = calls
+    return run
+
+
+def _ops(run, repo: str) -> list[str]:
+    return [args.split()[0] for name, args in run.calls if name == repo]
+
+
+def test_dirty_repo_is_fetched_not_pulled(tmp_path, monkeypatch):
+    p = _make_repo(tmp_path, "astro")
+    run = _git_by_argv({"status --porcelain": _cp(stdout=" M x\n")})
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run)
+    result = run_git_sync(_config([p]), MagicMock(), dry_run=False)
+    assert result.status == "ok"
+    assert result.reason == "1 skipped: astro (dirty worktree)"
+    assert "fetch" in _ops(run, "astro")
+    assert "pull" not in _ops(run, "astro")
+
+
+def test_fetch_failure_on_a_skipped_repo_is_a_failure(tmp_path, monkeypatch):
+    """A dirty repo that cannot reach its remote is a real failure, as a pull would be."""
+    p = _make_repo(tmp_path, "astro")
+    run = _git_by_argv(
+        {
+            "status --porcelain": _cp(stdout=" M x\n"),
+            "fetch": _cp(returncode=128, stderr="fatal: unable to access: network is down\n"),
+        }
+    )
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run)
+    result = run_git_sync(_config([p]), MagicMock(), dry_run=False)
+    assert result.status == "failed"
+    assert result.reason == "1 failed: astro (fatal: unable to access: network is down)"
+
+
+def test_branches_unset_pulls_any_tracked_branch(tmp_path, monkeypatch):
+    """No `branches` key keeps the pre-4.2 behaviour: a tracked feature branch is pulled."""
+    p = _make_repo(tmp_path, "biz")
+    run = _git_by_argv({"rev-parse --abbrev-ref HEAD": _cp(stdout="feature-x\n")})
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run)
+    config = _config([p])
+    assert config.git_sync_branches is None
+    result = run_git_sync(config, MagicMock(), dry_run=False)
+    assert result.reason == "1 pulled"
+    assert "pull" in _ops(run, "biz")
+
+
+def test_off_list_branch_is_fetched_not_pulled(tmp_path, monkeypatch):
+    p = _make_repo(tmp_path, "biz")
+    run = _git_by_argv({"rev-parse --abbrev-ref HEAD": _cp(stdout="feature-x\n")})
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run)
+    config = _config([p])
+    config.git_sync_branches = ["main", "master"]
+    result = run_git_sync(config, MagicMock(), dry_run=False)
+    assert result.reason == "1 skipped: biz (on branch feature-x)"
+    assert "fetch" in _ops(run, "biz")
+    assert "pull" not in _ops(run, "biz")
+
+
+def test_detached_head_is_named_as_such(tmp_path, monkeypatch):
+    p = _make_repo(tmp_path, "biz")
+    run = _git_by_argv({"rev-parse --abbrev-ref HEAD": _cp(stdout="HEAD\n")})
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run)
+    config = _config([p])
+    config.git_sync_branches = ["main"]
+    result = run_git_sync(config, MagicMock(), dry_run=False)
+    assert result.reason == "1 skipped: biz (detached HEAD)"
+
+
+def test_listed_branch_is_still_pulled(tmp_path, monkeypatch):
+    p = _make_repo(tmp_path, "biz")
+    run = _git_by_argv()
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run)
+    config = _config([p])
+    config.git_sync_branches = ["main", "master"]
+    result = run_git_sync(config, MagicMock(), dry_run=False)
+    assert result.reason == "1 pulled"
+    assert "fetch" not in _ops(run, "biz")
+
+
+def test_fetch_only_repo_never_reads_or_touches_the_work_tree(tmp_path, monkeypatch):
+    wiki = _make_repo(tmp_path, "wiki")
+    run = _git_by_argv()
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run)
+    config = _config([])
+    config.git_sync_fetch_only = [wiki]
+    result = run_git_sync(config, MagicMock(), dry_run=False)
+    assert result.status == "ok"
+    assert result.reason == "1 fetched"
+    ops = _ops(run, "wiki")
+    assert "fetch" in ops
+    assert "pull" not in ops
+    assert "status" not in ops  # status refreshes the index: not "hands off"
+
+
+def test_fetch_only_still_runs_the_unsafe_config_preflight(tmp_path, monkeypatch):
+    wiki = _make_repo(tmp_path, "wiki")
+    planted = "local\0http.https://evil.example/.proxy\nhttp://127.0.0.1:1\0"
+    run = _git_by_argv({"config --list": _cp(stdout=planted)})
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run)
+    config = _config([])
+    config.git_sync_fetch_only = [wiki]
+    result = run_git_sync(config, MagicMock(), dry_run=False)
+    assert result.reason.startswith("1 skipped: wiki (unsafe repo config:")
+    assert "fetch" not in _ops(run, "wiki")
+
+
+def test_path_in_both_lists_is_fetch_only(tmp_path, monkeypatch):
+    p = _make_repo(tmp_path, "wiki")
+    run = _git_by_argv()
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run)
+    config = _config([p])
+    config.git_sync_fetch_only = [p + "/"]
+    result = run_git_sync(config, MagicMock(), dry_run=False)
+    assert result.reason == "1 fetched"
+    assert "pull" not in _ops(run, "wiki")
+
+
+def test_aggregate_names_pulled_fetched_and_skipped(tmp_path, monkeypatch):
+    repos = [_make_repo(tmp_path, n) for n in ("a", "b", "c")]
+    wiki = _make_repo(tmp_path, "wiki")
+    base = _git_by_argv()
+
+    def run(cmd, **kwargs):
+        path, rest = _split_git_args(cmd)
+        if rest[:2] == ["status", "--porcelain"] and os.path.basename(path) in ("b", "c"):
+            return _cp(stdout=" M x\n")
+        return base(cmd, **kwargs)
+
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run)
+    config = _config(repos)
+    config.git_sync_fetch_only = [wiki]
+    result = run_git_sync(config, MagicMock(), dry_run=False)
+    assert result.reason == "1 pulled, 1 fetched, 2 skipped: b, c (dirty worktree)"
+
+
+def test_dry_run_says_fetch_for_fetch_only(tmp_path):
+    p = _make_repo(tmp_path, "biz")
+    wiki = _make_repo(tmp_path, "wiki")
+    config = _config([p])
+    config.git_sync_fetch_only = [wiki]
+    output = MagicMock()
+    result = run_git_sync(config, output, dry_run=True)
+    assert result.reason == "dry-run: 2 repos"
+    lines = [c[0][0] for c in output.task_debug.call_args_list]
+    assert f"would pull: {p}" in lines
+    assert f"would fetch: {wiki}" in lines

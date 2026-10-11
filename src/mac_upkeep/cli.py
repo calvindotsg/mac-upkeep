@@ -31,7 +31,14 @@ from mac_upkeep.config import (
 )
 from mac_upkeep.notify import detect_terminal_bundle_id, format_summary, notify
 from mac_upkeep.output import Output, TaskResult
-from mac_upkeep.tasks import TASKS, _load_state, format_last_run, format_next_run, run_all_tasks
+from mac_upkeep.tasks import (
+    TASKS,
+    _load_state,
+    format_last_run,
+    format_next_run,
+    run_all_tasks,
+    run_lock,
+)
 
 app = typer.Typer(
     help="Automated macOS mac-upkeep CLI.\n\n"
@@ -160,6 +167,23 @@ def run(
                 raise typer.Exit(1)
             force_set = set(requested)
 
+    # A dry run changes nothing, so it neither takes the lock nor waits on one.
+    with run_lock(enabled=not dry_run) as acquired:
+        if not acquired:
+            # Exit 0: another trigger is already doing this run's work. A non-zero exit
+            # would read as a failure in `brew services` and the log.
+            typer.echo("mac-upkeep: another run is in progress; exiting", err=True)
+            return
+        aborted = _run_locked(config, output, dry_run=dry_run, force_set=force_set)
+
+    if aborted:
+        raise typer.Exit(1)
+
+
+def _run_locked(
+    config: Config, output: Output, *, dry_run: bool, force_set: set[str] | None
+) -> bool:
+    """The body of `run`, under the run lock. Returns True if the run aborted."""
     output.header(dry_run=dry_run, task_names=config.run_order)
 
     # `results` is passed in and appended to as tasks complete, so the summary and
@@ -198,8 +222,7 @@ def run(
             open_url=log_url,
         )
 
-    if aborted:
-        raise typer.Exit(1)
+    return aborted
 
 
 def _frequency_label(td: TaskDef) -> str:

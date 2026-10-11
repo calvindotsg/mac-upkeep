@@ -308,7 +308,7 @@ def test_one_repo_raising_does_not_strand_the_rest(tmp_path, monkeypatch):
     config = _config(repos)
     output = MagicMock()
 
-    def fake_sync(path, *, skip_dirty):
+    def fake_sync(path, *, skip_dirty, **_):
         if os.path.basename(path) == "r1":
             raise UnicodeDecodeError("utf-8", b"\x80", 0, 1, "invalid start byte")
         return "pulled", ""
@@ -619,5 +619,5 @@ def test_refusal_is_a_skip_not_a_failure(tmp_path, monkeypatch):
 
     result = run_git_sync(_config([p]), output, dry_run=False)
     assert result.status == "ok"  # skipped repos do not fail the task
-    assert result.reason == "1 skipped"
+    assert result.reason.startswith("1 skipped: planted (unsafe repo config: http.")
     assert any("unsafe repo config" in c[0][0] for c in output.task_debug.call_args_list)

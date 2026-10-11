@@ -1,4 +1,4 @@
-"""Built-in git_sync handler: fast-forward pulls a user-configured list of repos."""
+"""Built-in git_sync handler: fast-forward pulls (or fetches) a user-configured list of repos."""
 
 from __future__ import annotations
 
@@ -277,16 +277,44 @@ def _resolve_paths(patterns: list[str], output: Output) -> list[str]:
                     seen.add(m)
                     paths.append(m)
         else:
+            # `~/x` and `~/x/` are one repo: two entries would sync it twice, and a
+            # path in both `repos` and `fetch_only` would be pulled as well as fetched.
+            expanded = os.path.normpath(expanded)
             if expanded not in seen:
                 seen.add(expanded)
                 paths.append(expanded)
     return paths
 
 
-def _sync_repo(path: str, *, skip_dirty: bool) -> tuple[str, str]:
-    """Sync one repo. Returns (status, reason) where status is pulled|up-to-date|skipped|failed.
+def _fetch(path: str) -> tuple[str, str] | None:
+    """Fetch without touching the work tree. None on success, else a `failed` result.
 
-    Only `pull` realistically times out (it's the sole network call); a 124 timeout on
+    Used wherever the work tree must be left alone -- a dirty checkout, a branch the
+    user is working on, a checkout shared with live worktrees -- so remote-tracking
+    refs still move forward instead of only on the days the checkout happens to be
+    clean. Always called after the unsafe-config pre-flight, through the same overrides.
+    """
+    r = _run_git(path, ["fetch"])
+    if r.returncode != 0:
+        stderr = _strip_ansi(r.stderr).strip().splitlines()
+        return "failed", stderr[0] if stderr else f"fetch exit {r.returncode}"
+    return None
+
+
+def _sync_repo(
+    path: str,
+    *,
+    skip_dirty: bool,
+    branches: list[str] | None = None,
+    fetch_only: bool = False,
+) -> tuple[str, str]:
+    """Sync one repo. Returns (status, reason); status is pulled|up-to-date|fetched|skipped|failed.
+
+    A repo skipped for a reason about its *work tree* (dirty, or on a branch outside
+    `branches`) is still fetched, so the skip costs the checkout's freshness only,
+    never `origin/*`'s. A fetch failure there is `failed`, exactly like a pull failure.
+
+    Only `pull`/`fetch` realistically time out (the network calls); a 124 timeout on
     the local pre-pull checks below would fall through to their "skipped" branches, which
     is fine — the run still completes either way thanks to _run_git's TimeoutExpired catch.
     """
@@ -305,8 +333,19 @@ def _sync_repo(path: str, *, skip_dirty: bool) -> tuple[str, str]:
     if r.returncode != 0 or not r.stdout.strip():
         return "skipped", "no remote configured"
 
+    if fetch_only:
+        return _fetch(path) or ("fetched", "")
+
     branch_r = _run_git(path, ["rev-parse", "--abbrev-ref", "HEAD"])
     branch = branch_r.stdout.strip() or "?"
+    if branches is not None and branch not in branches:
+        # Never pull a branch someone may be working on: a feature branch with an
+        # upstream would otherwise be fast-forwarded under them.
+        return _fetch(path) or (
+            "skipped",
+            "detached HEAD" if branch == "HEAD" else f"on branch {branch}",
+        )
+
     r = _run_git(path, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
     if r.returncode != 0:
         return "skipped", f"no upstream (branch={branch})"
@@ -314,7 +353,7 @@ def _sync_repo(path: str, *, skip_dirty: bool) -> tuple[str, str]:
     if skip_dirty:
         r = _run_git(path, ["status", "--porcelain"])
         if r.stdout.strip():
-            return "skipped", "dirty worktree"
+            return _fetch(path) or ("skipped", "dirty worktree")
 
     r = _run_git(path, ["pull", "--ff-only"])
     if r.returncode != 0:
@@ -332,17 +371,18 @@ _MAX_NAMES_PER_REASON = 3
 _MAX_REASON_LEN = 80
 
 
-def _format_failures(failures: list[tuple[str, str]]) -> str:
-    """Summarise failed repos grouped by reason.
+def _format_grouped(entries: list[tuple[str, str]]) -> str:
+    """Summarise failed or skipped repos grouped by reason.
 
     Per-repo reasons previously reached only `output.task_debug()`, which is
     suppressed without `--debug` -- so the log recorded "13 failed: <names>"
     with no cause, which is not actionable after the fact. Grouping matters
     because the common case is one shared cause (a network drop failing every
     repo at once), which would otherwise repeat the same message 13 times.
+    Skips are named the same way, so the log says *which* repos sat a run out.
     """
     grouped: dict[str, list[str]] = {}
-    for name, reason in failures:
+    for name, reason in entries:
         text = reason.strip() or "unknown error"
         if len(text) > _MAX_REASON_LEN:
             text = text[: _MAX_REASON_LEN - 1].rstrip() + "…"
@@ -359,7 +399,7 @@ def _format_failures(failures: list[tuple[str, str]]) -> str:
 
 def run_git_sync(config: Config, output: Output, dry_run: bool) -> TaskResult:
     """Handler entry point. Aggregate per-repo results into a single TaskResult."""
-    patterns = list(config.git_sync_repos)
+    patterns = list(config.git_sync_repos) + list(config.git_sync_fetch_only)
     if not patterns:
         return TaskResult("git_sync", "skipped", reason="no repos configured")
 
@@ -367,17 +407,29 @@ def run_git_sync(config: Config, output: Output, dry_run: bool) -> TaskResult:
     if not paths:
         return TaskResult("git_sync", "skipped", reason="no repos matched")
 
+    # A path in both lists is fetch-only: the reading that touches less wins.
+    fetch_only = {
+        os.path.normpath(p) for p in _resolve_paths(list(config.git_sync_fetch_only), output)
+    }
+
     if dry_run:
         for path in paths:
-            output.task_debug(f"would pull: {path}")
+            verb = "fetch" if os.path.normpath(path) in fetch_only else "pull"
+            output.task_debug(f"would {verb}: {path}")
         return TaskResult("git_sync", "ok", reason=f"dry-run: {len(paths)} repos")
 
     n_pulled = 0
-    n_skipped = 0
+    n_fetched = 0
+    skips: list[tuple[str, str]] = []
     failures: list[tuple[str, str]] = []
     for path in paths:
         try:
-            status, reason = _sync_repo(path, skip_dirty=config.git_sync_skip_dirty)
+            status, reason = _sync_repo(
+                path,
+                skip_dirty=config.git_sync_skip_dirty,
+                branches=config.git_sync_branches,
+                fetch_only=os.path.normpath(path) in fetch_only,
+            )
         except Exception as exc:  # noqa: BLE001 - one repo must never end the task
             # Mirrors the isolation _run_git's TimeoutExpired catch already provides.
             # Without it, anything unanticipated inside one repository strands every
@@ -388,22 +440,27 @@ def run_git_sync(config: Config, output: Output, dry_run: bool) -> TaskResult:
         if reason:
             display = f"{display} ({reason})"
         output.task_debug(display)
+        name = os.path.basename(path.rstrip("/"))
         if status in ("pulled", "up-to-date"):
             n_pulled += 1
+        elif status == "fetched":
+            n_fetched += 1
         elif status == "skipped":
-            n_skipped += 1
+            skips.append((name, reason))
         else:
-            failures.append((os.path.basename(path.rstrip("/")), reason))
+            failures.append((name, reason))
 
     if failures:
         return TaskResult(
-            "git_sync", "failed", reason=f"{len(failures)} failed: {_format_failures(failures)}"
+            "git_sync", "failed", reason=f"{len(failures)} failed: {_format_grouped(failures)}"
         )
 
     parts = []
     if n_pulled:
         parts.append(f"{n_pulled} pulled")
-    if n_skipped:
-        parts.append(f"{n_skipped} skipped")
+    if n_fetched:
+        parts.append(f"{n_fetched} fetched")
+    if skips:
+        parts.append(f"{len(skips)} skipped: {_format_grouped(skips)}")
     reason = ", ".join(parts) if parts else "no repos processed"
     return TaskResult("git_sync", "ok", reason=reason)

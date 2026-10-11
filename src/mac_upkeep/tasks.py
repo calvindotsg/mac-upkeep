@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
@@ -9,6 +10,7 @@ import shlex
 import shutil
 import subprocess
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -17,7 +19,7 @@ from mac_upkeep.config import Config, TaskDef, load_default_task_names, normaliz
 from mac_upkeep.output import TaskResult, strip_control_sequences
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from mac_upkeep.output import Output
 
@@ -40,6 +42,31 @@ FREQUENCY_THRESHOLDS: dict[str, timedelta] = {
     "weekly": timedelta(days=6),
     "monthly": timedelta(days=27),
 }  # buffer for schedule drift
+
+
+@contextmanager
+def run_lock(enabled: bool = True) -> Iterator[bool]:
+    """Hold an exclusive, non-blocking lock for a whole run. Yields False if another run has it.
+
+    Several triggers can overlap -- launchd's calendar slot, RunAtLoad after a reboot, a
+    second schedule, a manual `mac-upkeep run` -- and two runs racing would both pass the
+    frequency gate (state is written only after a task succeeds) and run `brew upgrade`
+    or `git pull` concurrently against the same prefix and checkouts. `flock` is released
+    by the kernel when the process dies, so a crash can never leave a stale lock behind.
+    `_STATE_DIR` is read at call time so test isolation's patch applies.
+    """
+    if not enabled:
+        yield True
+        return
+    _STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(_STATE_DIR / "run.lock", "a") as fh:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+
 
 # Tasks run with an explicit working directory so nothing about where the user
 # happened to invoke mac-upkeep can influence them. `brew bundle` in particular

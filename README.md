@@ -151,9 +151,17 @@ repos = [
     "~/work/max-*",       # glob patterns supported
 ]
 skip_dirty = true         # skip repos with uncommitted changes
+branches = ["main", "master"]  # optional: pull only these; fetch any other branch
+fetch_only = [            # optional: fetch, never pull (e.g. a checkout with live worktrees)
+    "~/work/shared-wiki",
+]
 ```
 
-Each repo is skipped with a reason if it's not a git repo, has no remote, has no upstream branch, or (when `skip_dirty = true`) has uncommitted changes.
+Each repo is skipped with a reason if it's not a git repo, has no remote, has no upstream branch, is on a branch outside `branches`, or (when `skip_dirty = true`) has uncommitted changes. A repo skipped for its branch or its uncommitted changes is still **fetched**, so `origin/*` stays current while your work tree is left alone. The run summary names the skipped repos and why, e.g. `9 pulled, 1 fetched, 2 skipped: astro, docs (dirty worktree)`.
+
+`branches` unset pulls whatever branch is checked out, as long as it has an upstream. `fetch_only` repos need not also be in `repos`; a path in both is fetch-only.
+
+Overlapping runs (the schedule, a login, a manual `mac-upkeep run`) do not collide: a run that finds another in progress exits 0 without doing anything.
 
 #### Only enrol repositories you created
 

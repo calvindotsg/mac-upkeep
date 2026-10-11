@@ -424,3 +424,38 @@ def test_aborted_run_does_not_notify_success(tmp_path, monkeypatch):
     notify_mock.assert_called_once()
     title = notify_mock.call_args[0][0]
     assert "complete" not in title.lower(), title
+
+
+# --- run lock (4.2.0) ---
+
+
+def test_second_run_exits_zero_while_another_holds_the_lock():
+    """Overlapping triggers (calendar, RunAtLoad, manual) must not run tasks twice."""
+    from mac_upkeep.tasks import run_lock
+
+    with run_lock() as held, patch("mac_upkeep.cli.run_all_tasks") as run_mock:
+        assert held
+        result = runner.invoke(app, ["run"])
+    assert result.exit_code == 0, result.output
+    assert "another run is in progress" in result.output
+    run_mock.assert_not_called()
+
+
+def test_lock_is_released_after_a_run():
+    from mac_upkeep.tasks import run_lock
+
+    with patch("mac_upkeep.cli.run_all_tasks"), patch("mac_upkeep.cli.notify"):
+        assert runner.invoke(app, ["run"]).exit_code == 0
+    with run_lock() as held:
+        assert held
+
+
+def test_dry_run_ignores_the_lock():
+    """A preview changes nothing, so it neither waits on nor blocks a real run."""
+    from mac_upkeep.tasks import run_lock
+
+    with run_lock() as held, patch("mac_upkeep.cli.run_all_tasks") as run_mock:
+        assert held
+        result = runner.invoke(app, ["run", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    run_mock.assert_called_once()

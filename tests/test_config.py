@@ -665,3 +665,36 @@ def test_weekday_anchor_refuses_a_non_weekly_task():
 def test_weekday_anchor_must_be_a_string():
     with pytest.raises(ValueError, match="'weekday' must be str"):
         load_task_defs({"tasks": {"brew_update": {"weekday": 1}}}, _VARS)
+
+
+# --- [git_sync] branches / fetch_only (4.2.0) ---
+
+
+def test_git_sync_branches_and_fetch_only_default(tmp_path):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text('[git_sync]\nrepos = ["~/a"]\n')
+    config = Config.load(cfg_path)
+    assert config.git_sync_branches is None  # unset = pull whatever is checked out
+    assert config.git_sync_fetch_only == []
+
+
+def test_git_sync_branches_and_fetch_only_load(tmp_path):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        '[git_sync]\nrepos = ["~/a"]\nbranches = ["main", "master"]\nfetch_only = ["~/wiki"]\n'
+    )
+    config = Config.load(cfg_path)
+    assert config.git_sync_branches == ["main", "master"]
+    assert config.git_sync_fetch_only == ["~/wiki"]
+
+
+@pytest.mark.parametrize(
+    "line",
+    ['branches = "main"', "branches = [1]", 'fetch_only = "~/wiki"', "fetch_only = true"],
+)
+def test_git_sync_list_settings_reject_wrong_types(tmp_path, line):
+    """`branches = "main"` would otherwise become ["m", "a", "i", "n"] and match nothing."""
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(f"[git_sync]\n{line}\n")
+    with pytest.raises(ValueError, match="must be a list of strings"):
+        Config.load(cfg_path)

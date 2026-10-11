@@ -304,6 +304,18 @@ def _parse_task_def(name: str, data: dict, *, raw_name: str | None = None) -> Ta
     )
 
 
+def _string_list(name: str, value: object) -> list[str]:
+    """A list-of-strings setting, or ValueError.
+
+    `branches = "main"` is the likely mistake, and `list("main")` would silently turn
+    it into ["m", "a", "i", "n"] -- an allowlist that matches nothing and quietly
+    stops every pull. Same fail-loud rule as the task-field checks above.
+    """
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ValueError(f"{name} must be a list of strings, got {value!r}")
+    return list(value)
+
+
 @dataclass
 class Config:
     """mac-upkeep configuration loaded from TOML + environment overrides."""
@@ -315,6 +327,10 @@ class Config:
     notify_sound: str = "Submarine"
     git_sync_repos: list[str] = field(default_factory=list)
     git_sync_skip_dirty: bool = True
+    # None = pull whatever branch is checked out (pre-4.2 behaviour); a list = pull only
+    # these, fetch the rest.
+    git_sync_branches: list[str] | None = None
+    git_sync_fetch_only: list[str] = field(default_factory=list)
     editor_cache_apps: list[dict] = field(default_factory=list)
 
     @classmethod
@@ -348,6 +364,11 @@ class Config:
             gs = user_data["git_sync"]
             config.git_sync_repos = list(gs.get("repos", []))
             config.git_sync_skip_dirty = bool(gs.get("skip_dirty", True))
+            if "branches" in gs:
+                config.git_sync_branches = _string_list("git_sync.branches", gs["branches"])
+            config.git_sync_fetch_only = _string_list(
+                "git_sync.fetch_only", gs.get("fetch_only", [])
+            )
 
         # Extract editor_cache app overrides from user config (else handler uses
         # its built-in DEFAULT_APPS).
