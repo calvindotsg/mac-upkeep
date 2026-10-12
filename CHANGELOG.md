@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.2.1](https://github.com/calvindotsg/mac-upkeep/compare/v4.2.0...v4.2.1) (2026-10-12)
+
+
+### Bug Fixes
+
+* log a handler's summary when it succeeds ([#86](https://github.com/calvindotsg/mac-upkeep/issues/86)) ([7edd56e](https://github.com/calvindotsg/mac-upkeep/commit/7edd56e2f6ace954d9b148a9869da995b80542de))
+
 ## [4.2.0](https://github.com/calvindotsg/mac-upkeep/compare/v4.1.0...v4.2.0) (2026-10-11)
 
 
