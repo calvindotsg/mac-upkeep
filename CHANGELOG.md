@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.2.2](https://github.com/calvindotsg/mac-upkeep/compare/v4.2.1...v4.2.2) (2026-10-13)
+
+
+### Miscellaneous
+
+* **deps:** bump the python group across 1 directory with 2 updates ([#76](https://github.com/calvindotsg/mac-upkeep/issues/76)) ([5306df7](https://github.com/calvindotsg/mac-upkeep/commit/5306df7577df89262800f2eed0933dd2d01a245d))
+
+
+### CI/CD
+
+* bump astral-sh/setup-uv from 10.0.1 to 10.2.0 in the actions group across 1 directory ([#81](https://github.com/calvindotsg/mac-upkeep/issues/81)) ([8210bc2](https://github.com/calvindotsg/mac-upkeep/commit/8210bc211fc87e5900fbe0b0ea6eb6cc09ff4ace))
+
 ## [4.2.1](https://github.com/calvindotsg/mac-upkeep/compare/v4.2.0...v4.2.1) (2026-10-12)
 
 
