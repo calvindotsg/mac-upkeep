@@ -142,7 +142,7 @@ order = ["brew_update", "brew_upgrade", "docker_prune", "brew_cleanup", "brew_bu
 
 ### git_sync
 
-Pull configured git repositories daily with `git pull --ff-only`. Opt-in — list your repos explicitly:
+Pull configured git repositories daily with `git fetch` then `git merge --ff-only @{upstream}` (not `git pull`, whose FETCH_HEAD a manual pull running at the same time can overwrite). Opt-in — list your repos explicitly:
 
 ```toml
 [git_sync]

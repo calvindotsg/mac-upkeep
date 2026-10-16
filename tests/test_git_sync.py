@@ -239,7 +239,9 @@ def test_aggregate_mixed(tmp_path, monkeypatch):
             return _cp(returncode=0, stdout="")
         if op == "status":
             return _cp(returncode=0, stdout="")
-        if op == "pull":
+        if op == "fetch":
+            return _cp(returncode=0)
+        if op == "merge":
             return _cp(returncode=0, stdout="Already up to date.\n")
         return _cp(returncode=1)
 
@@ -264,15 +266,16 @@ def test_env_forces_no_terminal_prompt(tmp_path, monkeypatch):
                 _cp(returncode=0, stdout="main\n"),
                 _cp(returncode=0, stdout="origin/main\n"),
                 _cp(returncode=0, stdout=""),
-                _cp(returncode=0, stdout="Already up to date.\n"),
+                _cp(returncode=0),  # fetch
+                _cp(returncode=0, stdout="Already up to date.\n"),  # merge
             ]
         )
     )
     monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run_mock)
     result = run_git_sync(config, output, dry_run=False)
     assert result.status == "ok"
-    # Six sequenced responses plus the unsafe-config pre-flight _sequenced answers.
-    assert run_mock.call_count == 7
+    # Seven sequenced responses plus the unsafe-config pre-flight _sequenced answers.
+    assert run_mock.call_count == 8
     for call in run_mock.call_args_list:
         env = call.kwargs["env"]
         assert env["GIT_TERMINAL_PROMPT"] == "0"
@@ -292,7 +295,8 @@ def test_env_respects_user_askpass(tmp_path, monkeypatch):
                 _cp(returncode=0, stdout="main\n"),
                 _cp(returncode=0, stdout="origin/main\n"),
                 _cp(returncode=0, stdout=""),
-                _cp(returncode=0, stdout="Already up to date.\n"),
+                _cp(returncode=0),  # fetch
+                _cp(returncode=0, stdout="Already up to date.\n"),  # merge
             ]
         )
     )
@@ -343,7 +347,7 @@ def test_pull_timeout_does_not_crash_run(tmp_path, monkeypatch):
                 _cp(returncode=0, stdout="main\n"),
                 _cp(returncode=0, stdout="origin/main\n"),
                 _cp(returncode=0, stdout=""),  # clean worktree
-                subprocess.TimeoutExpired(cmd=["git", "pull"], timeout=60),  # pull hangs
+                subprocess.TimeoutExpired(cmd=["git", "fetch"], timeout=60),  # fetch hangs
             ]
         )
     )
@@ -387,7 +391,7 @@ def test_multiple_repos_share_one_reason_in_result(tmp_path, monkeypatch):
     output = MagicMock()
 
     def fake_run(cmd, **kwargs):
-        if "pull" in cmd:
+        if "merge" in cmd:
             return _cp(returncode=1, stderr="fatal: unable to access: network is down\n")
         if "rev-parse" in cmd and "--is-inside-work-tree" in cmd:
             return _cp(returncode=0, stdout="true\n")
@@ -482,7 +486,7 @@ def test_remote_message_control_sequences_are_stripped(tmp_path, monkeypatch):
     payload = "fatal: \x1b]8;;https://evil.sh/x\x1b\\click\x1b]8;;\x1b\\ denied"
 
     def fake_run(cmd, **kwargs):
-        if "pull" in cmd:
+        if "merge" in cmd:
             return _cp(returncode=1, stderr=payload + "\n")
         if "rev-parse" in cmd and "--is-inside-work-tree" in cmd:
             return _cp(returncode=0, stdout="true\n")
@@ -552,7 +556,7 @@ def test_git_protocol_is_denied(monkeypatch):
         return _cp(returncode=1)
 
     monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", fake_run)
-    _run_git("/tmp/whatever", ["pull", "--ff-only"])
+    _run_git("/tmp/whatever", ["merge", "--ff-only", "@{upstream}"])
 
     cmd = captured["cmd"]
     overrides = {cmd[i + 1] for i, a in enumerate(cmd) if a == "-c"}
@@ -597,7 +601,8 @@ def _git_by_argv(overrides: dict[str, subprocess.CompletedProcess] | None = None
         "rev-parse --abbrev-ref --symbolic-full-name": _cp(stdout="origin/main\n"),
         "status --porcelain": _cp(stdout=""),
         "fetch": _cp(),
-        "pull --ff-only": _cp(stdout="Already up to date.\n"),
+        "config --type=bool --get submodule.recurse": _cp(returncode=1),  # unset
+        "merge --ff-only @{upstream}": _cp(stdout="Already up to date.\n"),
         **(overrides or {}),
     }
     calls: list[tuple[str, str]] = []
@@ -627,7 +632,7 @@ def test_dirty_repo_is_fetched_not_pulled(tmp_path, monkeypatch):
     assert result.status == "ok"
     assert result.reason == "1 skipped: astro (dirty worktree)"
     assert "fetch" in _ops(run, "astro")
-    assert "pull" not in _ops(run, "astro")
+    assert "merge" not in _ops(run, "astro")
 
 
 def test_fetch_failure_on_a_skipped_repo_is_a_failure(tmp_path, monkeypatch):
@@ -654,7 +659,7 @@ def test_branches_unset_pulls_any_tracked_branch(tmp_path, monkeypatch):
     assert config.git_sync_branches is None
     result = run_git_sync(config, MagicMock(), dry_run=False)
     assert result.reason == "1 pulled"
-    assert "pull" in _ops(run, "biz")
+    assert "merge" in _ops(run, "biz")
 
 
 def test_off_list_branch_is_fetched_not_pulled(tmp_path, monkeypatch):
@@ -666,7 +671,7 @@ def test_off_list_branch_is_fetched_not_pulled(tmp_path, monkeypatch):
     result = run_git_sync(config, MagicMock(), dry_run=False)
     assert result.reason == "1 skipped: biz (on branch feature-x)"
     assert "fetch" in _ops(run, "biz")
-    assert "pull" not in _ops(run, "biz")
+    assert "merge" not in _ops(run, "biz")
 
 
 def test_detached_head_is_named_as_such(tmp_path, monkeypatch):
@@ -687,7 +692,7 @@ def test_listed_branch_is_still_pulled(tmp_path, monkeypatch):
     config.git_sync_branches = ["main", "master"]
     result = run_git_sync(config, MagicMock(), dry_run=False)
     assert result.reason == "1 pulled"
-    assert "fetch" not in _ops(run, "biz")
+    assert _ops(run, "biz")[-2:] == ["fetch", "merge"]
 
 
 def test_fetch_only_repo_never_reads_or_touches_the_work_tree(tmp_path, monkeypatch):
@@ -701,7 +706,7 @@ def test_fetch_only_repo_never_reads_or_touches_the_work_tree(tmp_path, monkeypa
     assert result.reason == "1 fetched"
     ops = _ops(run, "wiki")
     assert "fetch" in ops
-    assert "pull" not in ops
+    assert "merge" not in ops
     assert "status" not in ops  # status refreshes the index: not "hands off"
 
 
@@ -725,7 +730,7 @@ def test_path_in_both_lists_is_fetch_only(tmp_path, monkeypatch):
     config.git_sync_fetch_only = [p + "/"]
     result = run_git_sync(config, MagicMock(), dry_run=False)
     assert result.reason == "1 fetched"
-    assert "pull" not in _ops(run, "wiki")
+    assert "merge" not in _ops(run, "wiki")
 
 
 def test_aggregate_names_pulled_fetched_and_skipped(tmp_path, monkeypatch):
@@ -770,9 +775,63 @@ def test_fetch_only_matches_by_identity_not_spelling(tmp_path, monkeypatch):
     config.git_sync_fetch_only = [real]
     result = run_git_sync(config, MagicMock(), dry_run=False)
     assert result.reason == "1 fetched"
-    assert not any(args.startswith("pull") for _, args in run.calls)
+    assert not any(args.startswith("merge") for _, args in run.calls)
 
 
 def test_glob_with_trailing_slash_dedupes_against_literal(tmp_path):
     p = _make_repo(tmp_path, "biz")
     assert _resolve_paths([str(tmp_path / "*") + "/", p], MagicMock()) == [p]
+
+
+# --- fetch + merge @{upstream}, never pull (FETCH_HEAD race, 14 Oct 2026) ---
+
+
+def test_sync_fetches_then_merges_upstream_and_never_pulls(tmp_path, monkeypatch):
+    p = _make_repo(tmp_path, "biz")
+    run = _git_by_argv({"merge --ff-only @{upstream}": _cp(stdout="Fast-forward\n")})
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run)
+    result = run_git_sync(_config([p]), MagicMock(), dry_run=False)
+    assert result.reason == "1 pulled"
+    calls = [args for name, args in run.calls if name == "biz"]
+    assert calls.index("fetch") < calls.index("merge --ff-only @{upstream}")
+    assert not any(args.startswith("pull") for args in calls)
+
+
+def test_fetch_failure_stops_before_merge(tmp_path, monkeypatch):
+    p = _make_repo(tmp_path, "biz")
+    run = _git_by_argv({"fetch": _cp(returncode=128, stderr="fatal: network is down\n")})
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run)
+    result = run_git_sync(_config([p]), MagicMock(), dry_run=False)
+    assert result.reason == "1 failed: biz (fatal: network is down)"
+    assert "merge" not in _ops(run, "biz")
+
+
+def test_submodules_updated_only_when_recurse_set_and_head_moved(tmp_path, monkeypatch):
+    p = _make_repo(tmp_path, "biz")
+    moved = {"merge --ff-only @{upstream}": _cp(stdout="Fast-forward\n")}
+    recurse_on = {"config --type=bool --get submodule.recurse": _cp(stdout="true\n")}
+    update = "submodule update --recursive --checkout"
+
+    for answers, expect in (
+        (moved, False),  # recurse unset
+        ({**moved, **recurse_on}, True),
+        (recurse_on, False),  # already up to date: nothing moved
+    ):
+        run = _git_by_argv({**answers, update: _cp()})
+        monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run)
+        run_git_sync(_config([p]), MagicMock(), dry_run=False)
+        assert (update in [a for _, a in run.calls]) is expect, answers
+
+
+def test_submodule_update_failure_is_reported(tmp_path, monkeypatch):
+    p = _make_repo(tmp_path, "biz")
+    run = _git_by_argv(
+        {
+            "merge --ff-only @{upstream}": _cp(stdout="Fast-forward\n"),
+            "config --type=bool --get submodule.recurse": _cp(stdout="true\n"),
+            "submodule update": _cp(returncode=1, stderr="fatal: clone of 'x' failed\n"),
+        }
+    )
+    monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", run)
+    result = run_git_sync(_config([p]), MagicMock(), dry_run=False)
+    assert result.reason == "1 failed: biz (submodule update: fatal: clone of 'x' failed)"

@@ -209,7 +209,7 @@ def test_all_four_signature_keys_are_pinned_in_argv(tmp_path, monkeypatch):
         return _cp(returncode=1)
 
     monkeypatch.setattr("mac_upkeep.git_sync.subprocess.run", fake_run)
-    _run_git(str(tmp_path), ["pull", "--ff-only"])
+    _run_git(str(tmp_path), ["merge", "--ff-only", "@{upstream}"])
 
     cmd = captured["cmd"]
     overrides = {cmd[i + 1] for i, a in enumerate(cmd) if a == "-c"}
@@ -330,7 +330,7 @@ _HOSTILE_NAME = "evil\x1b[2K\x1b[1Arepo"
 
 
 def _failing_git(cmd, **kwargs):
-    if "pull" in cmd:
+    if "merge" in cmd:
         return _cp(returncode=1, stderr="fatal: denied\n")
     if "--is-inside-work-tree" in cmd:
         return _cp(returncode=0, stdout="true\n")

@@ -80,7 +80,7 @@ _STATIC_OVERRIDES = [
     # unauthenticated, unencrypted legacy protocol no sync target should be using.
     "protocol.git.allow=never",
     # Signature verification is an execution sink. A repo that sets
-    # merge.verifySignatures makes `pull` verify the commit being merged, and git
+    # merge.verifySignatures makes `merge` verify the commit being merged, and git
     # runs gpg.<format>.program to do it. gpg.program is the openpgp synonym and
     # gpg.format selects which of the other three applies, so all four are pinned.
     # Reproduced on git 2.55 against the 4.0.0 override set: the payload FIRED --
@@ -329,7 +329,7 @@ def _sync_repo(
     `branches`) is still fetched, so the skip costs the checkout's freshness only,
     never `origin/*`'s. A fetch failure there is `failed`, exactly like a pull failure.
 
-    Only `pull`/`fetch` realistically time out (the network calls); a 124 timeout on
+    Only `fetch` realistically times out (the network call); a 124 timeout on
     the local pre-pull checks below would fall through to their "skipped" branches, which
     is fine — the run still completes either way thanks to _run_git's TimeoutExpired catch.
     """
@@ -370,15 +370,39 @@ def _sync_repo(
         if r.stdout.strip():
             return _fetch(path) or ("skipped", "dirty worktree")
 
-    r = _run_git(path, ["pull", "--ff-only"])
+    # Fetch, then merge the remote-tracking ref -- never `git pull`. Pull merges
+    # whatever FETCH_HEAD holds once its own fetch returns, and FETCH_HEAD is one file
+    # per repository that every fetch rewrites. A manual pull or fetch landing in that
+    # window (routine after a restart, when RunAtLoad and the user start together)
+    # made the merge use the user's FETCH_HEAD: "Cannot fast-forward to multiple
+    # branches", "Not possible to fast-forward", or -- silently -- a fast-forward of
+    # this branch onto another branch's commit. `@{upstream}` is a ref, updated under
+    # a lock, and names this branch's upstream whatever FETCH_HEAD says.
+    failed = _fetch(path)
+    if failed:
+        return failed
+    r = _run_git(path, ["merge", "--ff-only", "@{upstream}"])
     if r.returncode != 0:
         stderr = _strip_ansi(r.stderr).strip().splitlines()
-        first = stderr[0] if stderr else f"exit {r.returncode}"
+        # A divergence prints ten `hint:` lines before the `fatal:` that names it.
+        errors = [line for line in stderr if not line.startswith("hint:")]
+        first = errors[0] if errors else f"exit {r.returncode}"
         return "failed", first
 
     stdout = _strip_ansi(r.stdout).strip().lower()
     if "already up to date" in stdout or "already up-to-date" in stdout:
         return "up-to-date", ""
+
+    # `pull` updates submodules after the merge when submodule.recurse is set; `merge`
+    # does not. Without this the moved pointers read as ` M sub`, and skip_dirty then
+    # skips the repo on every later run, silently. `--checkout` forces the update mode,
+    # so a repo-local `submodule.<name>.update = !command` cannot run.
+    recurse = _run_git(path, ["config", "--type=bool", "--get", "submodule.recurse"])
+    if recurse.stdout.strip() == "true":
+        r = _run_git(path, ["submodule", "update", "--recursive", "--checkout"])
+        if r.returncode != 0:
+            stderr = _strip_ansi(r.stderr).strip().splitlines()
+            return "failed", f"submodule update: {stderr[0] if stderr else r.returncode}"
     return "pulled", ""
 
 
