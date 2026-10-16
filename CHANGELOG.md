@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.2.3](https://github.com/calvindotsg/mac-upkeep/compare/v4.2.2...v4.2.3) (2026-10-16)
+
+
+### Bug Fixes
+
+* git_sync merges @{upstream} instead of pulling FETCH_HEAD ([#91](https://github.com/calvindotsg/mac-upkeep/issues/91)) ([ef6a044](https://github.com/calvindotsg/mac-upkeep/commit/ef6a04400d8b738a29b1abc5600a93d9c3c3e472))
+
 ## [4.2.2](https://github.com/calvindotsg/mac-upkeep/compare/v4.2.1...v4.2.2) (2026-10-13)
 
 
