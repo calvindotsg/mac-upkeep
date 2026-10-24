@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# The merge gate: every merge-relevant check in this repo, one command (merge-on-green plan § 3.1, phase 3).
+#
+#   ./gate              run every check this machine can (local: fast and advisory)
+#   GATE_RUNNER=linux   what the hosted Linux job runs (the shared workflow in calvindotsg/.github sets it)
+#   GATE_RUNNER=macos   what the hosted macOS job runs: the checks that need macOS
+#
+# Last line: GATE <passed>/<total> failed=<n> notrun=<n> needs-calvin=<reason|none>
+# Exit 0 only with 0 failed, 0 not run, and nothing waiting on Calvin in CI.
+#
+# A check that belongs to the other platform is out of this run's total, never "not run". A check whose
+# tool is missing where it should run is "not run", and that fails the gate.
+#
+# What it wraps (the PR jobs, same commands):
+#   test.yml `test` (macos-latest, Python 3.11/3.12/3.13): uv lock --check, uv sync, ruff check, pytest.
+#     The lock and ruff rows are platform-independent, so they run on Linux. pytest needs macOS: the CLI's
+#     callback exits 1 off darwin (src/mac_upkeep/cli.py:115), and tests/test_cli.py drives it 34 times.
+#   pr-checks.yml `no-release-as` (ubuntu): both steps, over the commits from the base to HEAD, and in CI
+#     also over the squash message (PR title + body, read from GITHUB_EVENT_PATH). Locally there is no PR,
+#     so the squash-message part runs in CI only. It installs @conventional-commits/parser with npm, as CI does.
+#
+# Out, never counted:
+#   - test.yml on push to main: the same job after the merge
+#   - release.yml (push to main): release-please, verify-version, build, pypi-publish, bump-tap. Post-merge
+#     release jobs, with release secrets
+# Local and advisory: none. The gate never runs mac-upkeep itself: its tasks change this Mac (brew bundle
+# cleanup uninstalls), so they are the user's run, not a check of the change.
+# macOS bash 3.2: no mapfile, no associative arrays.
+
+set -u
+cd "$(dirname "$0")" || exit 2
+
+RUNNER="${GATE_RUNNER:-local}"
+case "$RUNNER" in
+  linux|macos|local) ;;
+  *) echo "gate: GATE_RUNNER must be linux, macos or unset (got $RUNNER)" >&2; exit 2 ;;
+esac
+# The rules and pin rows use the system Python on a Mac; elsewhere python3 is what there is.
+PY=python3
+[ -x /usr/bin/python3 ] && [ "$(uname -s)" = Darwin ] && PY=/usr/bin/python3
+# The pytest matrix of test.yml.
+PYTHONS="3.11 3.12 3.13"
+
+LOG="$(mktemp -d "${TMPDIR:-/tmp}/gate.XXXXXX")" || exit 2
+trap 'rm -rf "$LOG"' EXIT
+passed=0 failed=0 notrun=0 n=0
+needs="none"
+
+# applies <platforms>: true when this run includes a check for those platforms ("linux macos", "macos", ...).
+applies() {
+  case "$RUNNER" in
+    local) [ "$(uname -s)" = Darwin ] && return 0   # a Mac runs all; a Linux machine runs the Linux checks
+           case " $1 " in *" linux "*) return 0 ;; *) return 1 ;; esac ;;
+    *) case " $1 " in *" $RUNNER "*) return 0 ;; *) return 1 ;; esac ;;
+  esac
+}
+
+# check <name> <platforms> <tool> <command...>: run one check and tally it.
+check() {
+  local name="$1" where="$2" tool="$3"; shift 3
+  applies "$where" || return 0
+  n=$((n + 1))
+  if [ -n "$tool" ] && ! command -v "$tool" > /dev/null 2>&1; then
+    notrun=$((notrun + 1)); echo "notrun $name ($tool not found)"; return 0
+  fi
+  local t0=$SECONDS
+  if "$@" > "$LOG/$n" 2>&1; then
+    passed=$((passed + 1)); echo "ok     $name ($((SECONDS - t0)) s)"
+  else
+    failed=$((failed + 1)); echo "FAIL   $name ($((SECONDS - t0)) s)"; tail -20 "$LOG/$n" | sed 's/^/       /'
+  fi
+}
+
+# A suite's exit code alone passes a module under test that exits 0 on import (the suite inherits the
+# SystemExit). So a suite passes only with exit 0 AND its own passing summary as its last non-blank line.
+# pytest's is its final "=== N passed[, M skipped|deselected|xfailed|xpassed|warnings] in Xs ===" line, N > 0;
+# any failed or error count does not match.
+SUM_PYTEST='^=+ ([1-9][0-9]*) passed(, [0-9]+ (skipped|deselected|xfailed|xpassed|warnings?))* in [0-9.]+s( \([0-9:]+\))? =+$'
+summary_ok() {
+  [[ $1 =~ $SUM_PYTEST ]]
+}
+suite() { # suite <command...>: run it, then require exit 0 and a passing summary line
+  "$@" > "$LOG/suite" 2>&1; local rc=$? last
+  cat "$LOG/suite"
+  [ "$rc" = 0 ] || return 1
+  last="$(grep -v '^[[:space:]]*$' "$LOG/suite" | tail -1)"
+  summary_ok "$last" || { echo "gate: exit 0 but no passing summary line (last line: ${last:-none})"; return 1; }
+}
+
+# Each Python gets its own environment under $LOG, so the gate never touches the checkout's .venv.
+# Linters and the lock check below are contracted on their exit status.
+venv_run() { local v="$1"; shift; UV_PROJECT_ENVIRONMENT="$LOG/venv-$v" uv run --locked --python "$v" "$@"; }
+lock_check() { uv lock --check; }
+ruff_check() { venv_run 3.13 ruff check src/ tests/; }
+pytest_on() { venv_run "$1" pytest; }
+
+# The PR's commit range and squash message. In CI, from the pull_request event; locally, the merge base
+# with origin/main (else main) to HEAD, and no squash message.
+pr_range() {
+  base="" head="" title="" body=""
+  if [ "${GITHUB_ACTIONS:-}" = true ] && [ -n "${GITHUB_EVENT_PATH:-}" ] && [ -f "$GITHUB_EVENT_PATH" ]; then
+    base="$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("pull_request",{}).get("base",{}).get("sha",""))' "$GITHUB_EVENT_PATH")"
+    head="$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("pull_request",{}).get("head",{}).get("sha",""))' "$GITHUB_EVENT_PATH")"
+    title="$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("pull_request",{}).get("title") or "")' "$GITHUB_EVENT_PATH")"
+    body="$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("pull_request",{}).get("body") or "")' "$GITHUB_EVENT_PATH")"
+  fi
+  if [ -z "$base" ]; then
+    local ref
+    for ref in origin/main main; do
+      base="$(git merge-base "$ref" HEAD 2> /dev/null)" && [ -n "$base" ] && break
+    done
+  fi
+  [ -n "$head" ] || head="$(git rev-parse HEAD)"
+  [ -n "$base" ] || { echo "gate: no base commit (origin/main or main)"; return 1; }
+  git cat-file -e "${base}^{commit}" && git cat-file -e "${head}^{commit}" || { echo "gate: base or head not in this clone"; return 1; }
+}
+# pr-checks.yml step 1: every message must parse with @conventional-commits/parser 0.4.1 (installed as CI does).
+msg_parse() {
+  pr_range || return 1
+  local ccp="$LOG/ccp" sha count=0
+  mkdir -p "$ccp"
+  npm install --prefix "$ccp" --no-save --silent --ignore-scripts \
+    --registry=https://registry.npmjs.org @conventional-commits/parser@0.4.1 || return 1
+  cat > "$ccp/check-commit-msg.js" << 'JS'
+const { parser } = require("@conventional-commits/parser");
+const msg = require("fs").readFileSync(process.argv[2], "utf8");
+try {
+  parser(msg);
+} catch (e) {
+  console.log("release-please cannot parse this commit message: " + e.message);
+  console.log("A body line starting with name( is read as type(scope): -- indent it or reword.");
+  process.exit(1);
+}
+JS
+  for sha in $(git log --format='%H' "$base..$head"); do
+    git log -1 --format='%B' "$sha" > "$LOG/commit-msg.txt"
+    node "$ccp/check-commit-msg.js" "$LOG/commit-msg.txt" || { echo "in commit $sha"; return 1; }
+    count=$((count + 1))
+  done
+  echo "ok: $count commit message(s) parse"
+  if [ -z "$title" ]; then echo "squash message (PR title + body): checked in CI only"; return 0; fi
+  printf '%s\n\n%s\n' "$title" "$body" > "$LOG/squash-msg.txt"
+  node "$ccp/check-commit-msg.js" "$LOG/squash-msg.txt" || return 1
+  if tail -n +2 "$LOG/squash-msg.txt" | grep -nE '^`?[A-Za-z_][A-Za-z0-9_.-]*\('; then
+    echo "A squash-message body line above begins with name( -- indent it, bullet it, or reword."
+    return 1
+  fi
+  echo "ok: squash message parses and no body line begins with name("
+}
+# pr-checks.yml step 2: no Release-As trailer in any commit or in the squash message.
+no_release_as() {
+  pr_range || return 1
+  { git log --format='%B' "$base..$head"; printf '%s\n%s\n' "$title" "$body"; } > "$LOG/release-as-scan.txt"
+  if grep -qiE '^[[:space:]]*Release-As' "$LOG/release-as-scan.txt"; then
+    echo "A Release-As trailer overrides release-please version derivation. Remove it."; return 1
+  fi
+  echo "No Release-As trailer found."
+}
+rules_pinned() { [ "$("$PY" -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' scripts/gate/gate-rules.py)" = "$(cut -d' ' -f1 scripts/gate/gate-rules.sha256)" ]; }
+
+check "uv lock --check"                    "linux" uv   lock_check
+check "ruff check src/ tests/"             "linux" uv   ruff_check
+check "commit messages parse (pr-checks)"  "linux" npm  msg_parse
+check "no Release-As trailer (pr-checks)"  "linux" git  no_release_as
+for v in $PYTHONS; do
+  check "pytest (Python $v)"               "macos" uv   suite pytest_on "$v"
+done
+check "gate-rules.py matches its pin"      "linux" ""   rules_pinned
+
+# The needs-Calvin rules (plan § 3.4). Run only when the vendored copy matches its pin.
+if applies linux; then
+  n=$((n + 1))
+  if ! rules_pinned; then
+    notrun=$((notrun + 1)); echo "notrun needs-calvin rules (scripts/gate/gate-rules.py differs from its pin)"
+  else
+    "$PY" scripts/gate/gate-rules.py > "$LOG/rules" 2>&1; rc=$?
+    line="$(grep '^needs-calvin=' "$LOG/rules" | tail -1)"
+    case "$rc" in
+      0) passed=$((passed + 1)); echo "ok     needs-calvin rules ($line)" ;;
+      1) passed=$((passed + 1)); echo "ok     needs-calvin rules, waiting on Calvin ($line)" ;;
+      *) failed=$((failed + 1)); echo "FAIL   needs-calvin rules (cannot decide)" ;;
+    esac
+    sed 's/^/       /' "$LOG/rules"
+    reason="${line#needs-calvin=}"; reason="${reason% review=*}"
+    [ -n "$line" ] && [ "$reason" != none ] && needs="$reason"
+    [ "$rc" = 1 ] && rules_block=1
+  fi
+fi
+
+echo "GATE $passed/$n failed=$failed notrun=$notrun needs-calvin=$needs"
+[ "$failed" = 0 ] && [ "$notrun" = 0 ] && [ "${rules_block:-0}" = 0 ]

@@ -6,6 +6,7 @@
 
 | Command | Purpose |
 |---------|---------|
+| `./gate` | Merge gate: every PR check; last line `GATE <passed>/<total> failed=<n> notrun=<n> needs-calvin=<reason\|none>` |
 | `uv sync` | Install dependencies |
 | `uv run ruff check src/ tests/` | Lint |
 | `uv run ruff format src/ tests/` | Format |
