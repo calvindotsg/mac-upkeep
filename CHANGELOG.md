@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.2.4](https://github.com/calvindotsg/mac-upkeep/compare/v4.2.3...v4.2.4) (2026-10-28)
+
+
+### Bug Fixes
+
+* **git_sync:** skip repos whose ssh agent cannot sign instead of timing out on each ([#97](https://github.com/calvindotsg/mac-upkeep/issues/97)) ([65d9203](https://github.com/calvindotsg/mac-upkeep/commit/65d9203076609b975de8d7521f26eeffdecc4321))
+
+
+### Miscellaneous
+
+* **gate:** add ./gate, one command for every PR check ([#93](https://github.com/calvindotsg/mac-upkeep/issues/93)) ([345f8eb](https://github.com/calvindotsg/mac-upkeep/commit/345f8ebb509a093cef02908726d341779534fd20))
+* **gate:** vendor gate-rules 2a549f9 (F12 base, F7 bytes) ([#95](https://github.com/calvindotsg/mac-upkeep/issues/95)) ([34a5ff5](https://github.com/calvindotsg/mac-upkeep/commit/34a5ff573e825038b5fff07536a48fb576818030))
+* **gate:** vendor gate-rules 86ac4f7 (binary files listed with their size) ([#96](https://github.com/calvindotsg/mac-upkeep/issues/96)) ([2e55908](https://github.com/calvindotsg/mac-upkeep/commit/2e559081cc434c4e20cd99efdf3bade810e2f621))
+
 ## [4.2.3](https://github.com/calvindotsg/mac-upkeep/compare/v4.2.2...v4.2.3) (2026-10-16)
 
 
