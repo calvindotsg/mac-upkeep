@@ -6,6 +6,7 @@ import glob
 import os
 import re
 import subprocess
+import time
 from typing import TYPE_CHECKING
 
 from mac_upkeep.output import TaskResult, strip_control_sequences
@@ -406,6 +407,91 @@ def _sync_repo(
     return "pulled", ""
 
 
+# The ssh agent can be unable to sign for hours: 1Password's agent answers a sign request
+# with a Touch ID prompt, and on a locked Mac nobody is there to touch the sensor. The
+# prompt times out after 60 s, so every ssh fetch then costs a full `_run_git` timeout --
+# 19 repos took 19 minutes on 22-28 Oct 2026, ending in "timed out after 60s" for each.
+# One bounded probe per ssh host finds this out in seconds, and the repos on that host
+# are SKIPPED, not failed: a locked Mac is not a fault, and a failure here would feed
+# retry backoff and the failure report every morning until Calvin sat down.
+_PROBE_TIMEOUT = 20
+_PROBE_CONNECT_TIMEOUT = 10
+# Total wall-clock budget for the task. The probe covers the one hang seen; this covers
+# the next one nobody has seen yet.
+_TASK_BUDGET = 300
+
+# `ssh -T` against a git host prints these when it reached the host but the agent could
+# not sign or the key was refused. A network error ("Could not resolve hostname") is
+# deliberately NOT here: that is the ordinary per-repo fetch failure and stays one.
+_AGENT_FAILURE = re.compile(
+    r"signing failed|agent refused|Permission denied|sign_and_send_pubkey", re.I
+)
+
+_SCP_URL = re.compile(r"^(?:(?P<user>[^@/:]+)@)?(?P<host>[^/:]+):(?!//)")
+_SSH_URL = re.compile(r"^ssh://(?:(?P<user>[^@/]+)@)?(?P<host>[^/:]+)")
+
+
+def _ssh_target(url: str) -> tuple[str, str] | None:
+    """(user, host) of an ssh remote URL, or None for https, file and local paths."""
+    url = url.strip()
+    if url.startswith("ssh://"):
+        m = _SSH_URL.match(url)
+    elif "://" in url or url.startswith(("/", ".")):
+        return None
+    else:
+        m = _SCP_URL.match(url)
+    if not m:
+        return None
+    return m.group("user") or "git", m.group("host")
+
+
+def _probe_host(user: str, host: str) -> str:
+    """ "" when the agent can sign for `host`, else the reason it cannot."""
+    cmd = [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        f"ConnectTimeout={_PROBE_CONNECT_TIMEOUT}",
+        "-T",
+        f"{user}@{host}",
+    ]
+    try:
+        r = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=_PROBE_TIMEOUT,
+            stdin=subprocess.DEVNULL,
+            env=_build_env(),
+        )
+    except subprocess.TimeoutExpired:
+        return f"ssh agent did not answer for {host} within {_PROBE_TIMEOUT}s (Mac locked?)"
+    except OSError:
+        return ""  # no ssh binary: leave it to each fetch to report
+    if r.returncode != 0 and _AGENT_FAILURE.search(r.stderr):
+        return f"ssh agent cannot sign for {host} (Mac locked?)"
+    return ""
+
+
+def _probe_ssh_agent(paths: list[str]) -> dict[str, str]:
+    """Map each repo path whose ssh host cannot be signed for to the reason to skip it.
+
+    One probe per distinct (user, host), not per repo. Reads the remote URL with the same
+    trusted overrides as every other git call. Best effort: a repo whose URL cannot be
+    read is left out and goes through the normal per-repo path.
+    """
+    hosts: dict[str, tuple[str, str]] = {}
+    for path in paths:
+        r = _run_git(path, ["ls-remote", "--get-url"], timeout=10)
+        target = _ssh_target(r.stdout) if r.returncode == 0 else None
+        if target:
+            hosts[path] = target
+    verdicts = {t: _probe_host(*t) for t in set(hosts.values())}
+    return {p: verdicts[t] for p, t in hosts.items() if verdicts[t]}
+
+
 _MAX_NAMES_PER_REASON = 3
 _MAX_REASON_LEN = 80
 
@@ -461,7 +547,19 @@ def run_git_sync(config: Config, output: Output, dry_run: bool) -> TaskResult:
     n_fetched = 0
     skips: list[tuple[str, str]] = []
     failures: list[tuple[str, str]] = []
+    unsignable = _probe_ssh_agent(paths)
+    deadline = time.monotonic() + _TASK_BUDGET
     for path in paths:
+        name = os.path.basename(path.rstrip("/"))
+        if path in unsignable:
+            output.task_debug(f"{path}: skipped ({unsignable[path]})")
+            skips.append((name, unsignable[path]))
+            continue
+        if time.monotonic() > deadline:
+            reason = f"task budget of {_TASK_BUDGET}s spent"
+            output.task_debug(f"{path}: skipped ({reason})")
+            skips.append((name, reason))
+            continue
         try:
             status, reason = _sync_repo(
                 path,
@@ -479,7 +577,6 @@ def run_git_sync(config: Config, output: Output, dry_run: bool) -> TaskResult:
         if reason:
             display = f"{display} ({reason})"
         output.task_debug(display)
-        name = os.path.basename(path.rstrip("/"))
         if status in ("pulled", "up-to-date"):
             n_pulled += 1
         elif status == "fetched":
