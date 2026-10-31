@@ -74,7 +74,7 @@ enabled = false
 
 [tasks.mo_purge]
 description = "Remove old project artifacts"
-command = "${BREW_PREFIX}/bin/mo purge"
+command = "${BREW_PREFIX}/bin/mo purge --yes"
 detect = "${BREW_PREFIX}/bin/mo"
 frequency = "monthly"
 
