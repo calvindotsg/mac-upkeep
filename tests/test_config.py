@@ -106,6 +106,8 @@ def test_load_task_defs_defaults_only():
     assert task_defs["gcloud"].frequency == "monthly"
     assert task_defs["mo_clean"].sudo is False  # 4.0.0: mole runs as the invoking user
     assert task_defs["mo_clean"].command == "/opt/homebrew/bin/mo clean"
+    # Mole 1.66 refuses an unattended purge without --yes ("Purge requires confirmation")
+    assert task_defs["mo_purge"].command == "/opt/homebrew/bin/mo purge --yes"
     assert task_defs["fisher"].shell == "fish --interactive -c"
     assert run_order[0] == "brew_update"
     assert run_order[-1] == "editor_cache"

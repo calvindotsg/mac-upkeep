@@ -340,7 +340,7 @@ reported `parsed OK` on the injected result.
 ## Non-Obvious Constraints
 
 - `gcloud-cli` is a Homebrew cask, not a formula — can't be a formula dependency. Auto-detected at runtime.
-- `mo_purge` non-interactive mode (stdin closed) auto-selects items not modified in the last 7 days. Interactive mode shows a TUI selector.
+- `mo_purge` runs `mo purge --yes`: since Mole 1.66 a non-interactive purge (stdin closed) without `--yes` exits with "Purge requires confirmation" (`bin/purge.sh`, the `MOLE_PURGE_YES` guard). With `--yes` it cleans only eligible artifacts, i.e. not recently modified; rows whose activity probe is uncertain stay unselected. Interactive mode shows a TUI selector.
 - `mo_optimize` has three unguarded `read_key` calls that block on stdin. With stdin closed, `read` returns non-zero → prompts skipped. Safe operations still run.
 - `uv cache prune` requires `--force` in environments with long-running `uvx` processes (MCP servers). Without it, prune blocks on the cache lock ([astral-sh/uv#16112](https://github.com/astral-sh/uv/issues/16112)).
 - NOPASSWD in sudoers bypasses PAM entirely — no interaction with Touch ID (pam_tid) setup.
