@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.2.5](https://github.com/calvindotsg/mac-upkeep/compare/v4.2.4...v4.2.5) (2026-10-31)
+
+
+### Bug Fixes
+
+* pass --yes to mo purge so the monthly task runs unattended ([#99](https://github.com/calvindotsg/mac-upkeep/issues/99)) ([243f024](https://github.com/calvindotsg/mac-upkeep/commit/243f024eaa4f3df67ad0d80afe58f59b2f431690))
+
 ## [4.2.4](https://github.com/calvindotsg/mac-upkeep/compare/v4.2.3...v4.2.4) (2026-10-28)
 
 
