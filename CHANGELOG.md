@@ -1,5 +1,22 @@
 # Changelog
 
+## [4.2.6](https://github.com/calvindotsg/mac-upkeep/compare/v4.2.5...v4.2.6) (2026-11-20)
+
+
+### Tests
+
+* read both curl wordings of a failed proxy connect, and a midnight-safe anchor case ([#102](https://github.com/calvindotsg/mac-upkeep/issues/102)) ([a76821c](https://github.com/calvindotsg/mac-upkeep/commit/a76821c19ff289971b96864aed4722cf93ef0ef7))
+
+
+### Miscellaneous
+
+* **deps:** bump the python group across 1 directory with 3 updates ([#101](https://github.com/calvindotsg/mac-upkeep/issues/101)) ([4f2be68](https://github.com/calvindotsg/mac-upkeep/commit/4f2be681ff810fe376ddb11e624a440061e7fc4f))
+
+
+### CI/CD
+
+* bump the actions group across 1 directory with 5 updates ([#98](https://github.com/calvindotsg/mac-upkeep/issues/98)) ([0e18c8e](https://github.com/calvindotsg/mac-upkeep/commit/0e18c8e76f8c611ccbec29b09024ca18c7659948))
+
 ## [4.2.5](https://github.com/calvindotsg/mac-upkeep/compare/v4.2.4...v4.2.5) (2026-10-31)
 
 
