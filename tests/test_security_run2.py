@@ -587,6 +587,56 @@ def test_no_proxy_is_not_set_over_a_users_env_proxy(monkeypatch, var):
     assert "NO_PROXY" not in git_sync._build_env()
 
 
+def _connect_went_through_proxy(stderr: str) -> bool:
+    """True when git's curl reports that the connect went through the per-URL proxy.
+
+    The wording depends on the curl that git links. Before curl commit bc40e09f6 (May
+    2026, "lib: introduce Curl_peer") the message named the host it dialled, so a
+    proxied connect said "port 1" and a direct one "port 9". From then on it names the
+    origin either way ("127.0.0.1:9") and adds "over proxy <host>" only when a proxy was
+    used (lib/cf-ip-happy.c). The macOS runner image moved to the new wording in
+    November 2026 and this test went red on a PR that changed nothing here.
+    """
+    return "port 1" in stderr or "over proxy" in stderr
+
+
+def _connect_went_direct(stderr: str) -> bool:
+    """True when the connect failed against 127.0.0.1:9 itself, with no proxy in between."""
+    dialled_origin = "port 9" in stderr or "127.0.0.1:9 after" in stderr
+    return dialled_origin and not _connect_went_through_proxy(stderr)
+
+
+@pytest.mark.parametrize(
+    ("stderr", "proxied", "direct"),
+    [
+        # curl 8.14 (before bc40e09f6): the dialled host and port.
+        (
+            "Failed to connect to 127.0.0.1 port 1 after 0 ms: Could not connect to server",
+            True,
+            False,
+        ),
+        (
+            "Failed to connect to 127.0.0.1 port 9 after 0 ms: Could not connect to server",
+            False,
+            True,
+        ),
+        # curl after bc40e09f6: the origin, plus "over proxy" when proxied.
+        (
+            "Failed to connect to 127.0.0.1:9 over proxy 127.0.0.1 after 0 ms: "
+            "Could not connect to server",
+            True,
+            False,
+        ),
+        ("Failed to connect to 127.0.0.1:9 after 0 ms: Could not connect to server", False, True),
+        # Neither: an unrelated failure must not pass as a direct connect.
+        ("fatal: repository not found", False, False),
+    ],
+)
+def test_connect_message_reading_covers_both_curl_wordings(stderr, proxied, direct):
+    assert _connect_went_through_proxy(stderr) is proxied
+    assert _connect_went_direct(stderr) is direct
+
+
 def test_no_proxy_defeats_a_per_url_proxy_without_the_refusal(tmp_path, monkeypatch):
     """Independent of _unsafe_repo_config: proven at the _run_git layer.
 
@@ -603,9 +653,11 @@ def test_no_proxy_defeats_a_per_url_proxy_without_the_refusal(tmp_path, monkeypa
     _plain_git(p, ["config", f"http.{url}.proxy", "http://127.0.0.1:1"])
 
     # PREFLIGHT: the proxy really is honoured without the block.
-    assert "port 1" in _plain_git(p, ["ls-remote", url]).stderr
+    preflight = _plain_git(p, ["ls-remote", url]).stderr
+    assert _connect_went_through_proxy(preflight), preflight
 
-    assert "port 9" in _run_git(p, ["ls-remote", url]).stderr, "proxy was still used"
+    guarded = _run_git(p, ["ls-remote", url]).stderr
+    assert _connect_went_direct(guarded), f"proxy was still used: {guarded}"
 
 
 def test_refusal_is_a_skip_not_a_failure(tmp_path, monkeypatch):
