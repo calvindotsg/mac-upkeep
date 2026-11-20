@@ -820,13 +820,40 @@ def test_anchored_should_run_sunday_run_is_due_on_monday(tmp_path, monkeypatch):
     assert _should_run("brew_update", config) is True
 
 
+def _earlier_today(now: datetime) -> datetime:
+    """A time on today's date, before `now`: halfway through the day so far.
+
+    `now - 1 hour` is yesterday during the first hour after midnight, which is
+    when the macOS runner (UTC) ran this test on 20 Nov 2026 and failed it.
+    """
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight + (now - midnight) / 2
+
+
 def test_anchored_should_run_not_due_inside_the_week(tmp_path, monkeypatch):
     # Last success earlier today: the next anchor midnight is strictly in the
     # future whatever today is, so a boot-time re-run is skipped.
     from mac_upkeep.config import WEEKDAYS
 
     config = _anchored_config(WEEKDAYS[datetime.now().weekday()])
-    _state(tmp_path, monkeypatch, datetime.now() - timedelta(hours=1))
+    _state(tmp_path, monkeypatch, _earlier_today(datetime.now()))
+    assert _should_run("brew_update", config) is False
+
+
+def test_anchored_should_run_not_due_ten_minutes_after_midnight(tmp_path, monkeypatch):
+    # The same case pinned at 00:10, the hour in which it used to go red.
+    from mac_upkeep.config import WEEKDAYS
+
+    fixed = datetime(2026, 11, 20, 0, 10, 19)
+
+    class _At0010(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed
+
+    monkeypatch.setattr("mac_upkeep.tasks.datetime", _At0010)
+    config = _anchored_config(WEEKDAYS[fixed.weekday()])
+    _state(tmp_path, monkeypatch, _earlier_today(fixed))
     assert _should_run("brew_update", config) is False
 
 
