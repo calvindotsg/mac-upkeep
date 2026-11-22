@@ -316,6 +316,19 @@ def _string_list(name: str, value: object) -> list[str]:
     return list(value)
 
 
+def _fetch_via_table(value: object) -> dict[str, list[str]]:
+    """`[git_sync.fetch_via]`: host -> non-empty command list, `~` expanded, or ValueError."""
+    if not isinstance(value, dict):
+        raise ValueError(f"git_sync.fetch_via must be a table, got {value!r}")
+    table: dict[str, list[str]] = {}
+    for host, cmd in value.items():
+        cmd = _string_list(f"git_sync.fetch_via.{host}", cmd)
+        if not cmd or not cmd[0].strip():
+            raise ValueError(f"git_sync.fetch_via.{host} must name a command, got {cmd!r}")
+        table[host] = [os.path.expanduser(a) if i == 0 else a for i, a in enumerate(cmd)]
+    return table
+
+
 @dataclass
 class Config:
     """mac-upkeep configuration loaded from TOML + environment overrides."""
@@ -331,6 +344,8 @@ class Config:
     # these, fetch the rest.
     git_sync_branches: list[str] | None = None
     git_sync_fetch_only: list[str] = field(default_factory=list)
+    # ssh host of a remote URL -> command that fetches it instead of `git fetch`.
+    git_sync_fetch_via: dict[str, list[str]] = field(default_factory=dict)
     editor_cache_apps: list[dict] = field(default_factory=list)
 
     @classmethod
@@ -369,6 +384,8 @@ class Config:
             config.git_sync_fetch_only = _string_list(
                 "git_sync.fetch_only", gs.get("fetch_only", [])
             )
+
+            config.git_sync_fetch_via = _fetch_via_table(gs.get("fetch_via", {}))
 
         # Extract editor_cache app overrides from user config (else handler uses
         # its built-in DEFAULT_APPS).

@@ -90,6 +90,6 @@ def isolate_user_environment(tmp_path_factory, monkeypatch):
     # The ssh-agent probe shells out to git and ssh for every repo; the handler tests
     # feed `subprocess.run` fixed sequences that an extra call would shift. Off by
     # default, the probe's own tests (test_git_sync_ssh_probe.py) call it for real.
-    monkeypatch.setattr("mac_upkeep.git_sync._probe_ssh_agent", lambda paths: {})
+    monkeypatch.setattr("mac_upkeep.git_sync._probe_ssh_agent", lambda paths, *a: {})
 
     yield root

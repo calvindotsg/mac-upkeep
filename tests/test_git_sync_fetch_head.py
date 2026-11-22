@@ -83,7 +83,7 @@ def upstream(tmp_path, monkeypatch):
 def _racing_fetch(monkeypatch, manual: list[str]) -> None:
     """git_sync's fetch, then the user's command lands before git_sync merges."""
 
-    def fetch(path: str):
+    def fetch(path: str, fetch_via=None):
         assert _git(path, "fetch", "-q").returncode == 0
         assert _git(path, "fetch", "-q", *manual).returncode == 0
         return None
@@ -182,7 +182,7 @@ def test_submodules_follow_the_merge_and_a_planted_update_command_does_not_run(
     assert marker.exists(), "the planted update command never ran -- the test is inert"
     marker.unlink()
 
-    def fetch(path: str):
+    def fetch(path: str, fetch_via=None):
         setup_git(path, "fetch", "-q", "--recurse-submodules=yes")
         return None
 
