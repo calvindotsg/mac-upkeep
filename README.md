@@ -161,6 +161,22 @@ Each repo is skipped with a reason if it's not a git repo, has no remote, has no
 
 `branches` unset pulls whatever branch is checked out, as long as it has an upstream. `fetch_only` repos need not also be in `repos`; a path in both is fetch-only.
 
+#### Fetching through a token wrapper (`fetch_via`)
+
+An unattended run cannot answer an SSH agent's approval prompt (1Password's, for one, asks for Touch ID per application). `fetch_via` maps the SSH host of a repo's remote URL (as it appears in `git remote get-url`, scp form or `ssh://`) to a command that does the fetch instead of `git fetch`:
+
+```toml
+[git_sync.fetch_via]
+"github.com-personal" = ["~/.config/bin/gh-bot", "git", "fetch"]
+"github.com-work" = ["~/.config/bin/gh-work", "git", "fetch"]
+```
+
+- The command runs with the repo as its working directory (no `-C`), the same timeout and environment. `~` is expanded in the command path. Merge, status and the other checks stay local git.
+- Hosts with an entry are not probed for the SSH agent, since they no longer use SSH. Hosts without one behave as before.
+- A command that is missing or not executable fails that repo with a reason. There is **no fallback to SSH**.
+- **What it keeps:** the static overrides from the table below (`core.fsmonitor`, hooks, `gpg.*.program`, the protocol denials) are handed to the command as `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`, so a planted `.git/config` cannot run code through the git the command starts. The unsafe-config pre-flight still runs first.
+- **What it cannot:** the command is yours, so mac-upkeep cannot see what git it runs or force the overrides into it; a wrapper that clears `GIT_CONFIG_*` loses them. It also does not carry your credential helper, proxy or `sshCommand` settings; the wrapper supplies its own credentials. Use only wrappers you trust.
+
 Overlapping runs (the schedule, a login, a manual `mac-upkeep run`) do not collide: a run that finds another in progress exits 0 without doing anything.
 
 #### Only enrol repositories you created

@@ -5,6 +5,7 @@ from __future__ import annotations
 import glob
 import os
 import re
+import shutil
 import subprocess
 import time
 from typing import TYPE_CHECKING
@@ -302,14 +303,72 @@ def _resolve_paths(patterns: list[str], output: Output | None) -> list[str]:
     return paths
 
 
-def _fetch(path: str) -> tuple[str, str] | None:
+def _fetch_command(path: str, fetch_via: dict[str, list[str]]) -> list[str] | None:
+    """The configured fetch command for this repo's remote host, or None for plain `git fetch`."""
+    if not fetch_via:
+        return None
+    r = _run_git(path, ["ls-remote", "--get-url"], timeout=10)
+    target = _ssh_target(r.stdout) if r.returncode == 0 else None
+    if target is None:
+        return None
+    return fetch_via.get(target[1])
+
+
+def _fetch_via(path: str, cmd: list[str]) -> tuple[str, str] | None:
+    """Run a user-configured fetch command in the repo. Never falls back to ssh.
+
+    The command (a token wrapper such as `gh-bot git fetch`) runs git itself, so the
+    `-c` overrides `_run_git` prepends do not reach it. The static half is therefore
+    handed over as GIT_CONFIG_* environment variables, which git reads at the same
+    precedence as `-c`. The inherited half is left out on purpose: the wrapper supplies
+    its own credentials, and re-adding the user's credential helper would defeat it.
+    """
+    exe = os.path.expanduser(cmd[0])
+    resolved = exe if os.sep in exe else shutil.which(exe)
+    if not resolved or not os.path.isfile(resolved) or not os.access(resolved, os.X_OK):
+        return "failed", f"fetch_via command not found or not executable: {cmd[0]}"
+    env = _build_env()
+    count = env.get("GIT_CONFIG_COUNT", "")
+    start = int(count) if count.isdigit() else 0
+    for i, entry in enumerate(_STATIC_OVERRIDES, start):
+        key, _, value = entry.partition("=")
+        env[f"GIT_CONFIG_KEY_{i}"] = key
+        env[f"GIT_CONFIG_VALUE_{i}"] = value
+    env["GIT_CONFIG_COUNT"] = str(start + len(_STATIC_OVERRIDES))
+    argv = [resolved, *[os.path.expanduser(a) for a in cmd[1:]]]
+    try:
+        r = subprocess.run(
+            argv,
+            cwd=path,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=60,
+            stdin=subprocess.DEVNULL,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return "failed", "timed out after 60s"
+    except OSError as exc:
+        return "failed", f"fetch_via command failed to start: {exc.strerror or exc}"
+    if r.returncode != 0:
+        stderr = _strip_ansi(r.stderr).strip().splitlines()
+        return "failed", stderr[0] if stderr else f"fetch exit {r.returncode}"
+    return None
+
+
+def _fetch(path: str, fetch_via: dict[str, list[str]] | None = None) -> tuple[str, str] | None:
     """Fetch without touching the work tree. None on success, else a `failed` result.
 
     Used wherever the work tree must be left alone -- a dirty checkout, a branch the
     user is working on, a checkout shared with live worktrees -- so remote-tracking
     refs still move forward instead of only on the days the checkout happens to be
     clean. Always called after the unsafe-config pre-flight, through the same overrides.
+    A remote host listed in `fetch_via` is fetched by that command instead of `git fetch`.
     """
+    cmd = _fetch_command(path, fetch_via or {})
+    if cmd is not None:
+        return _fetch_via(path, cmd)
     r = _run_git(path, ["fetch"])
     if r.returncode != 0:
         stderr = _strip_ansi(r.stderr).strip().splitlines()
@@ -323,6 +382,7 @@ def _sync_repo(
     skip_dirty: bool,
     branches: list[str] | None = None,
     fetch_only: bool = False,
+    fetch_via: dict[str, list[str]] | None = None,
 ) -> tuple[str, str]:
     """Sync one repo. Returns (status, reason); status is pulled|up-to-date|fetched|skipped|failed.
 
@@ -350,14 +410,14 @@ def _sync_repo(
         return "skipped", "no remote configured"
 
     if fetch_only:
-        return _fetch(path) or ("fetched", "")
+        return _fetch(path, fetch_via) or ("fetched", "")
 
     branch_r = _run_git(path, ["rev-parse", "--abbrev-ref", "HEAD"])
     branch = branch_r.stdout.strip() or "?"
     if branches is not None and branch not in branches:
         # Never pull a branch someone may be working on: a feature branch with an
         # upstream would otherwise be fast-forwarded under them.
-        return _fetch(path) or (
+        return _fetch(path, fetch_via) or (
             "skipped",
             "detached HEAD" if branch == "HEAD" else f"on branch {branch}",
         )
@@ -369,7 +429,7 @@ def _sync_repo(
     if skip_dirty:
         r = _run_git(path, ["status", "--porcelain"])
         if r.stdout.strip():
-            return _fetch(path) or ("skipped", "dirty worktree")
+            return _fetch(path, fetch_via) or ("skipped", "dirty worktree")
 
     # Fetch, then merge the remote-tracking ref -- never `git pull`. Pull merges
     # whatever FETCH_HEAD holds once its own fetch returns, and FETCH_HEAD is one file
@@ -379,7 +439,7 @@ def _sync_repo(
     # branches", "Not possible to fast-forward", or -- silently -- a fast-forward of
     # this branch onto another branch's commit. `@{upstream}` is a ref, updated under
     # a lock, and names this branch's upstream whatever FETCH_HEAD says.
-    failed = _fetch(path)
+    failed = _fetch(path, fetch_via)
     if failed:
         return failed
     r = _run_git(path, ["merge", "--ff-only", "@{upstream}"])
@@ -475,18 +535,21 @@ def _probe_host(user: str, host: str) -> str:
     return ""
 
 
-def _probe_ssh_agent(paths: list[str]) -> dict[str, str]:
+def _probe_ssh_agent(
+    paths: list[str], skip_hosts: frozenset[str] | set[str] = frozenset()
+) -> dict[str, str]:
     """Map each repo path whose ssh host cannot be signed for to the reason to skip it.
 
     One probe per distinct (user, host), not per repo. Reads the remote URL with the same
     trusted overrides as every other git call. Best effort: a repo whose URL cannot be
-    read is left out and goes through the normal per-repo path.
+    read is left out and goes through the normal per-repo path. Hosts in `skip_hosts`
+    (those with a `fetch_via` entry) are not probed: they no longer use ssh.
     """
     hosts: dict[str, tuple[str, str]] = {}
     for path in paths:
         r = _run_git(path, ["ls-remote", "--get-url"], timeout=10)
         target = _ssh_target(r.stdout) if r.returncode == 0 else None
-        if target:
+        if target and target[1] not in skip_hosts:
             hosts[path] = target
     verdicts = {t: _probe_host(*t) for t in set(hosts.values())}
     return {p: verdicts[t] for p, t in hosts.items() if verdicts[t]}
@@ -547,7 +610,7 @@ def run_git_sync(config: Config, output: Output, dry_run: bool) -> TaskResult:
     n_fetched = 0
     skips: list[tuple[str, str]] = []
     failures: list[tuple[str, str]] = []
-    unsignable = _probe_ssh_agent(paths)
+    unsignable = _probe_ssh_agent(paths, set(config.git_sync_fetch_via))
     deadline = time.monotonic() + _TASK_BUDGET
     for path in paths:
         name = os.path.basename(path.rstrip("/"))
@@ -566,6 +629,7 @@ def run_git_sync(config: Config, output: Output, dry_run: bool) -> TaskResult:
                 skip_dirty=config.git_sync_skip_dirty,
                 branches=config.git_sync_branches,
                 fetch_only=_repo_key(path) in fetch_only,
+                fetch_via=config.git_sync_fetch_via,
             )
         except Exception as exc:  # noqa: BLE001 - one repo must never end the task
             # Mirrors the isolation _run_git's TimeoutExpired catch already provides.
