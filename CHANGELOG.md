@@ -1,5 +1,32 @@
 # Changelog
 
+## [4.3.0](https://github.com/calvindotsg/mac-upkeep/compare/v4.2.5...v4.3.0) (2026-11-28)
+
+
+### Features
+
+* **git_sync:** fetch through a token wrapper per ssh host with fetch_via ([#104](https://github.com/calvindotsg/mac-upkeep/issues/104)) ([7a30ba1](https://github.com/calvindotsg/mac-upkeep/commit/7a30ba1a707d3cd81f9438c3668f3bc3b602e472))
+
+
+### Tests
+
+* read both curl wordings of a failed proxy connect, and a midnight-safe anchor case ([#102](https://github.com/calvindotsg/mac-upkeep/issues/102)) ([a76821c](https://github.com/calvindotsg/mac-upkeep/commit/a76821c19ff289971b96864aed4722cf93ef0ef7))
+
+
+### Documentation
+
+* document notifications and editor_cache, and correct the pnpm row ([#107](https://github.com/calvindotsg/mac-upkeep/issues/107)) ([3439f0f](https://github.com/calvindotsg/mac-upkeep/commit/3439f0f1174292b63551ede35fe3d92602be70b0))
+
+
+### Miscellaneous
+
+* **deps:** bump the python group across 1 directory with 3 updates ([#101](https://github.com/calvindotsg/mac-upkeep/issues/101)) ([4f2be68](https://github.com/calvindotsg/mac-upkeep/commit/4f2be681ff810fe376ddb11e624a440061e7fc4f))
+
+
+### CI/CD
+
+* bump the actions group across 1 directory with 5 updates ([#98](https://github.com/calvindotsg/mac-upkeep/issues/98)) ([0e18c8e](https://github.com/calvindotsg/mac-upkeep/commit/0e18c8e76f8c611ccbec29b09024ca18c7659948))
+
 ## [4.2.5](https://github.com/calvindotsg/mac-upkeep/compare/v4.2.4...v4.2.5) (2026-10-31)
 
 
