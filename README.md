@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/calvindotsg/mac-upkeep/blob/main/LICENSE)
 [![macOS](https://img.shields.io/badge/platform-macOS-lightgrey?logo=apple&logoColor=black)](https://github.com/calvindotsg/mac-upkeep)
 
-Automated macOS maintenance CLI. Runs Homebrew updates, dev tool cache cleanup (gcloud, pnpm, uv), Fish plugin updates, system optimization, and Brewfile enforcement on boot + weekly via `brew services` — zero config required.
+Automated macOS maintenance CLI. Runs Homebrew updates and cleanup, dev tool upkeep (gcloud updates, uv cache pruning), Fish plugin updates, user cache cleanup and Brewfile enforcement. It runs on boot and weekly via `brew services`, and can also keep your git repos in sync if you list them. Zero config required.
 
 ![mac-upkeep demo](https://raw.githubusercontent.com/calvindotsg/mac-upkeep/main/demo/demo.gif)
 
@@ -31,7 +31,7 @@ uvx mac-upkeep run            # one-off without installing
 | `brew_update` | Update Homebrew package database | Weekly |
 | `brew_upgrade` | Upgrade outdated formulae and casks | Weekly |
 | `gcloud` | Update Google Cloud SDK components | Monthly |
-| `pnpm` | Prune pnpm content-addressable store | Monthly |
+| `pnpm` | Prune pnpm content-addressable store | Off by default: on pnpm 11, `store prune` removes packages still in use ([pnpm/pnpm#10132](https://github.com/pnpm/pnpm/issues/10132)) |
 | `uv` | Prune uv package cache | Monthly |
 | `fisher` | Update Fish shell plugins | Weekly |
 | `mo_clean` | Clean user caches ([Mole](https://github.com/tw93/Mole)) | Weekly |
@@ -40,8 +40,11 @@ uvx mac-upkeep run            # one-off without installing
 | `brew_cleanup` | Remove old versions and cache files | Monthly |
 | `brew_bundle` | Remove packages not in Brewfile | Weekly |
 | `git_sync` | Pull configured git repositories | Daily |
+| `editor_cache` | Clear Notion and Zed caches while those apps are not running | Off by default (monthly once you turn it on) |
 
 Tasks auto-detect installed tools — missing tools are skipped. Use `--force <task>` to run a specific task on demand.
+
+The schedule is the shortest gap between two runs of a task. The service starts a run only at boot and every Monday at 12 PM. So a daily task runs more often only when you also run `mac-upkeep run` yourself.
 
 ```bash
 mac-upkeep tasks  # See all tasks with status, frequency, and next run
@@ -63,6 +66,7 @@ mac-upkeep setup                     # Print log-rotation config
 mac-upkeep status                    # Show scheduling dashboard
 mac-upkeep logs                      # View last 20 log lines
 mac-upkeep logs -f                   # Follow logs
+mac-upkeep notify-test               # Send a test notification
 mac-upkeep --version                 # Show version
 ```
 
@@ -228,6 +232,37 @@ Any of the following work under launchd without mac-upkeep-side configuration:
 - **`[url].insteadOf` rewrite:** force SSH regardless of remote protocol by rewriting `https://<host>/` in `~/.gitconfig` to a matching SSH `Host` alias. Bypasses HTTPS auth entirely.
 
 git_sync sets `GIT_TERMINAL_PROMPT=0` and a no-op `GIT_ASKPASS` default (user-set `GIT_ASKPASS` is respected) so misconfigured auth fails in milliseconds instead of stalling to the 60 s subprocess timeout.
+
+### Notifications
+
+After a run in which a task ran or failed, mac-upkeep posts a macOS notification with a summary. It uses [terminal-notifier](https://github.com/julienXX/terminal-notifier) if you have it, and clicking the notification then opens the log. Without it, mac-upkeep falls back to `osascript`. A run that skips every task stays silent, and so does `--dry-run`.
+
+```toml
+[notifications]
+enabled = true        # false turns them off
+sound = "Submarine"   # a macOS system sound name
+```
+
+`MAC_UPKEEP_NOTIFY=false` (or `0`, or `no`) turns them off for one run. After setup, run `mac-upkeep notify-test` to check that macOS lets them through.
+
+### editor_cache
+
+Some apps keep caches of several GB that `mo clean` does not touch. `editor_cache` clears them, but only while the app is not running, and only under `~/Library/Application Support`. Because it deletes files, it starts off. Turn it on in your config:
+
+```toml
+[tasks.editor_cache]
+enabled = true
+```
+
+By default it clears the Notion caches every time, and the Zed `node/cache` only when that folder grows past 2 GB. To pick your own apps, replace the list:
+
+```toml
+[[editor_cache.apps]]
+name = "Notion"
+process = "Notion"          # skipped while this process runs
+min_size_mb = 0             # 0 = always clear when closed
+targets = ["~/Library/Application Support/Notion/Partitions/notion/Cache"]
+```
 
 ### Environment variables
 
