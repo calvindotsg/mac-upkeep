@@ -31,7 +31,7 @@ wheels = [
 
 [[package]]
 name = "mac-upkeep"
-version = "4.2.5"
+version = "4.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "typer" },
